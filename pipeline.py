@@ -8,6 +8,16 @@ import cv2
 import prompts
 import vision
 
+# The model can only cite regions the prompt offers it, and the renderer can
+# only draw regions vision.py knows. When those two lists drift apart the
+# mismatch is silent — findings are filtered out and simply never appear. Fail
+# at import instead.
+_mismatch = set(prompts.REGIONS) ^ set(vision.REGION_INDICES)
+if _mismatch:
+    raise RuntimeError(
+        f"region vocabulary mismatch between prompts.REGIONS and "
+        f"vision.REGION_INDICES: {sorted(_mismatch)}")
+
 RAMP = ["#E1F5EE", "#9FE1CB", "#FAC775", "#EF9F27", "#D85A30", "#A32D2D"]
 BANDS = [(2, "minimal"), (4, "mild"), (6, "moderate"), (8, "notable"), (10, "significant")]
 
@@ -20,6 +30,88 @@ def band(score):
 
 def _colour(score):
     return RAMP[min(5, max(0, score) // 2)]
+
+
+REGION_LABEL = {
+    "forehead": "Forehead", "glabella": "Between the brows", "nose": "Nose",
+    "left_cheek": "Left cheek", "right_cheek": "Right cheek",
+    "periorbital_left": "Around the left eye",
+    "periorbital_right": "Around the right eye",
+    "perioral": "Around the mouth", "chin": "Chin",
+    "jawline_left": "Left jawline", "jawline_right": "Right jawline",
+}
+
+
+def _jpeg_b64(bgr, quality=88):
+    return base64.b64encode(
+        cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])[1]).decode()
+
+
+def build_receipts(bgr, pts, findings, limit=4):
+    """Evidence crops — one per finding worth showing.
+
+    Every claim the report makes is about a place on a face, and until you show
+    that place at a size where it can be seen, the claim is just an assertion.
+    These are the receipts: the actual pixels the finding came from.
+
+    Selection is deterministic — no model involved. Regions are ranked by the
+    strongest score citing them, so the crops lead with whatever is most worth
+    looking at rather than walking the metrics in declaration order. A region
+    cited by several metrics gets one crop carrying all of them, which is also
+    what stops the strip from repeating the same patch of cheek three times.
+    """
+    cited = {}
+    for name, data in findings.get("metrics", {}).items():
+        score = data.get("score")
+        if score is None:
+            continue
+        for region in data.get("regions") or []:
+            if region in vision.REGION_INDICES:
+                cited.setdefault(region, []).append((name, score))
+
+    # Measured metrics earn a receipt on the same terms as judged ones.
+    for region, score in (findings.get("pore_size", {}).get("per_region") or {}).items():
+        if region in vision.REGION_INDICES and region in \
+                (findings.get("pore_size", {}).get("regions") or []):
+            cited.setdefault(region, []).append(("pore size", score))
+
+    ranked = sorted(cited.items(),
+                    key=lambda kv: (-max(s for _, s in kv[1]), -len(kv[1]), kv[0]))
+
+    spots = findings.get("blemishes", {}).get("spots") or []
+    room = limit - 1 if len(spots) >= 3 else limit
+
+    receipts = []
+    for region, metrics in ranked[:max(room, 0)]:
+        crop = vision.crop_region(bgr, pts, region)
+        if crop is None:
+            continue
+        metrics.sort(key=lambda m: -m[1])
+        receipts.append({
+            "kind": "region",
+            "region": region,
+            "label": REGION_LABEL.get(region, region.replace("_", " ").capitalize()),
+            "claim": " · ".join(f"{n} {band(s)}" for n, s in metrics),
+            "metrics": [{"metric": n, "score": s, "band": band(s)} for n, s in metrics],
+            "zoom": crop["zoom"], "source_px": crop["source_px"], "box": crop["box"],
+            "image_b64": _jpeg_b64(crop["image"]),
+        })
+
+    if len(spots) >= 3 and len(receipts) < limit:
+        crop = vision.crop_spots(bgr, pts, spots)
+        if crop is not None:
+            n = crop.get("marked", 0)
+            receipts.append({
+                "kind": "spots",
+                "region": None,
+                "label": "Blemishes",
+                "claim": f"{n} of {len(spots)} detected spots in view",
+                "metrics": [],
+                "zoom": crop["zoom"], "source_px": crop["source_px"], "box": crop["box"],
+                "image_b64": _jpeg_b64(crop["image"]),
+            })
+
+    return receipts
 
 
 def render_overlay(findings, pts, w, h):
@@ -96,7 +188,8 @@ def analyse(path, mock=False, runs=None):
         "path": path, "width": w, "height": h,
         "findings": findings,
         "overlay_svg": render_overlay(findings, pts, w, h),
-        "image_b64": base64.b64encode(cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 82])[1]).decode(),
+        "receipts": build_receipts(bgr, pts, findings),
+        "image_b64": _jpeg_b64(bgr, 82),
     }
 
     if not mock:

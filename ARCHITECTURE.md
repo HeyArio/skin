@@ -159,13 +159,31 @@ old `mp.solutions` API, which was removed in mediapipe 1.0. The Tasks API exists
 in both 0.10.x and 1.0.x, so the code runs on either. The landmarker is built
 once and reused — constructing it per image is slow.
 
-`REGION_INDICES` maps each analysis region to a list of FaceMesh landmark
-indices tracing its outline. Because landmarks track the actual face, these
-polygons fit any face at any size or angle automatically.
+`REGION_INDICES` maps each analysis region to a **set** of FaceMesh landmark
+indices. `region_polygon` takes the convex hull of that set, so index order does
+not matter. Because landmarks track the actual face, these polygons fit any face
+at any size or angle automatically.
+
+The hull is the point. Hand-ordered outlines fail silently: swap two indices and
+you get a self-intersecting polygon that still fills, still measures, and still
+renders — just over the wrong pixels, with nothing in the output to say so. A
+hull cannot fail that way, and every region here is convex enough for one.
+
+Two regions are defined by the feature at their centre rather than by the skin
+around it. `REGION_DILATE` grows the periorbital and perioral hulls about their
+own centroid, and `REGION_HOLES` punches the eye aperture or the lip line back
+out, so what gets measured is a ring of skin and never an eyeball or a lip.
+
+**Left and right are the subject's, not the viewer's.** In MediaPipe's canonical
+mesh, landmarks 33/133 are the subject's *right* eye and 362/263 the subject's
+*left* — the opposite of the side they appear on in a front-facing photo. The
+specialist report is read by someone who will act on it, and clinical convention
+is the patient's own left and right.
 
 **These index sets need visual verification.** Run `--debug-mesh` and check that
 each labelled polygon sits where it should. Wrong polygons mean the overlay
-lands in the wrong place *and* every measured metric samples the wrong pixels.
+lands in the wrong place, every measured metric samples the wrong pixels, *and*
+the evidence crops show the wrong patch of skin.
 
 The quality gate runs before any API call: resolution, Laplacian blur variance,
 face size in frame, and a rough yaw check comparing nose-tip position against
@@ -194,8 +212,9 @@ UI shows.
 ### run.py
 
 Batches a folder and writes `out/review.html` — every image with its overlay,
-toggle buttons, both reports, and the raw JSON. That page is the actual
-deliverable of Phase 0.
+toggle buttons, the evidence crops, both reports, and the raw JSON. Optionally
+prints the same page to `out/review.pdf`. That page is the actual deliverable of
+Phase 0.
 
 ---
 
@@ -240,6 +259,39 @@ instant.
 
 For the specialist's PDF, the identical coordinates go through `resvg` or Pillow
 server-side — so what the doctor sees is pixel-for-pixel what the user saw.
+
+---
+
+## 5a. Evidence crops
+
+Every band the report shows is a claim about a place on a face. Until that place
+is shown at a size where it can be seen, the claim is an assertion the reader has
+to take on faith — and "moderate redness, left cheek" reads exactly the same on
+every face that ever passes through the pipeline. The crops are the fix, and they
+are the difference between a result that looks generated and one that looks read.
+
+`vision.crop_region` cuts a square around a region's hull and scales it up;
+`vision.crop_spots` does the same around the tightest cluster of detected
+blemishes and rings each one. `pipeline.build_receipts` chooses which crops to
+make.
+
+Three properties matter:
+
+- **Selection is deterministic.** No model involved. Regions are ranked by the
+  strongest score citing them, so the strip leads with whatever is most worth
+  looking at rather than walking the metrics in declaration order. A region cited
+  by several metrics gets one crop carrying all of them, which is what stops the
+  strip from showing the same cheek three times.
+- **The magnification is stated, and only when it is real.** A crop badged 2.5x
+  is 2.5x. Below 1.2x no badge is drawn, because labelling a 1.0x crop as a zoom
+  is the kind of small dishonesty that costs you the reader's trust in
+  everything else on the page.
+- **The crop stays on the region.** Squaring on the long side is right for a
+  roughly square region and wrong for a wide flat one — a square as wide as the
+  forehead reaches down over the eyes, and then the reader looks at the eyes.
+  The square is capped at twice the short side.
+
+They cost nothing: no tokens, no model, a few milliseconds of OpenCV.
 
 ---
 
@@ -353,9 +405,18 @@ python run.py images/face.jpg --debug-mesh  # 2. are the regions in the right pl
 python run.py images/ --mock                # 3. dry run, no tokens
 python run.py images/ --runs 1              # 4. first real pass
 python run.py images/                       # 5. median-of-3 once tuned
+python run.py images/ --pdf                 # 6. same page as out/review.pdf
 ```
 
 Open `out/review.html`.
+
+`--pdf` prints that same page with headless Chrome or Chromium — whichever of
+`CHROME_BIN`, a Playwright cache, or a system install it finds first. Rendering
+the HTML rather than building the PDF separately means one layout to maintain
+and no second renderer to disagree with the first; the print rules live in the
+same stylesheet, under `@media print`. The HTML is still written either way,
+since it is what gets printed. Only the toggles are lost, for the obvious
+reason.
 
 ---
 
@@ -399,7 +460,10 @@ When you do build it:
 
 | What | Where | Note |
 |---|---|---|
-| Region polygons | `vision.REGION_INDICES` | Verify with `--debug-mesh`. Expect an hour. |
+| Region polygons | `vision.REGION_INDICES` | Verify with `--debug-mesh` after any edit. |
+| Ring width, periorbital / perioral | `vision.REGION_DILATE` | How far the hull grows before the feature is punched out |
+| Crop framing | `vision.crop_region`, `pad` | 1.0 keeps cheek crops off the eye |
+| Receipts per image | `pipeline.build_receipts`, `limit` | 4 fits one row at print width |
 | Blur threshold | `vision.quality_gate`, currently 60 | Calibrate against `blur_score` on real photos |
 | Face-size minimum | `vision.quality_gate`, 0.25 of frame width | |
 | Yaw tolerance | `vision.quality_gate`, 0.13 | |

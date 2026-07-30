@@ -1,0 +1,9 @@
+# The gateway URL carries the credential in its path, so the whole file is a
+# secret. This is the single most important line here.
+.env
+
+# Generated output — rewritten on every run.
+out/
+
+__pycache__/
+*.py[cod]

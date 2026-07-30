@@ -54,9 +54,14 @@ the overlay renderer and the review page without spending a token.
 ```bash
 python run.py images/            # median-of-3 scoring
 python run.py images/ --runs 1   # single pass, while iterating on the rubric
+python run.py images/ --pdf      # also write out/review.pdf
 ```
 
 Open `out/review.html`.
+
+`--pdf` prints the same page with headless Chrome or Chromium, found via
+`CHROME_BIN`, a Playwright cache, or a system install. The HTML is written
+either way — it is what gets printed. Only the layer toggles are lost.
 
 ## What to look at in the review page
 
@@ -68,6 +73,10 @@ Open `out/review.html`.
 - **Rejections** — how many real photos fail the quality gate. If it's most of
   them, your gate is too strict and users will bounce before they ever see a
   result. Thresholds are in `vision.quality_gate`.
+- **The evidence crops.** Each finding is shown next to the zoomed patch of skin
+  it came from. Can you see the thing the band claims is there? If you can't,
+  the score is wrong, the region polygon is wrong, or the rubric anchor is too
+  loose — and which of the three is usually obvious from the crop.
 - **The reports themselves.** Would your specialist act on them? That's the
   whole point of Phase 0.
 
@@ -94,6 +103,10 @@ probe.py      endpoint shape detector
   double as the marker layer.
 - **Everything is normalised by face width**, so scores don't change with how
   close the phone was held.
+- **Every finding gets an evidence crop** — the actual pixels it came from, at
+  2-3x, chosen deterministically from the scores. No tokens, no model.
+- **Left and right are the subject's**, not the viewer's, because a specialist
+  reading "left cheek" will examine the patient's left cheek.
 - **The UI shows bands, not numbers.** Raw scores stay internal. A 6-to-7 wobble
   is invisible in a band and glaring on a dial.
 - **The denylist is enforced in code**, not left to the prompt. Prompts drift;
