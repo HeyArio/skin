@@ -55,7 +55,8 @@ below.
         ┌──────────────────────┼──────────────────────┐
         │                      │                      │
  [CALL 2 — TEXT]       [SVG RENDERER]         [CALL 3 — TEXT]
- gpt-oss-120b          local, free            gpt-oss-120b
+ Gemini Flash-Lite     local, free            Gemini Flash-Lite
+ (text only, no image) (no model at all)      (text only, no image)
         │                      │                      │
  user report            3-layer overlay        specialist report
         │
@@ -67,14 +68,32 @@ below.
 **Three model calls, not one.** Only Call 1 ever sees the image. Calls 2 and 3
 receive the findings JSON as text. This matters for four reasons:
 
-1. **Cost.** Text calls on a cheap model cost roughly a fifth of the vision call.
+1. **Cost.** Text calls carry no image tokens, so they cost roughly half a
+   vision pass each even on the same model. And because Call 1 is the only one
+   worth running three times for a median, keeping the report calls separate
+   means you pay for the median once, not three times over.
 2. **Consistency.** A model re-reading pixels to write prose would reinterpret
    them. Reading structured numbers gives the same prose every time.
 3. **Privacy.** Calls 2 and 3 carry region names and integers — no face, no
    identity. They can be routed to any provider without a data-protection
-   question. Only Call 1 needs a provider you have a contract with.
+   question. Only Call 1 needs a provider you have a contract with. This
+   currently costs you nothing to keep true, and it is the property that lets
+   you take EU users later without re-architecting.
 4. **Swappability.** Each stage has one input shape and one output shape. Any
    stage can be replaced without touching the others.
+
+### One model or two?
+
+All three calls currently run on **Gemini 3.1 Flash-Lite**. That is the right
+call at this stage: one key, one gateway, one request shape, one thing to probe
+and debug. Operational simplicity is worth more right now than token savings.
+
+The cheaper alternative is a small text-only model such as gpt-oss-120b for
+Calls 2 and 3, which would cut roughly 250 Toman per scan — about a third of the
+total. Worth revisiting once volume is real, and it is a config change rather
+than a code change, because those two calls already go through their own
+`TEXT_URL` / `TEXT_MODEL` settings. Nothing in the pipeline assumes the three
+calls share a model.
 
 ---
 
@@ -279,24 +298,30 @@ Five mitigations, in order of effect:
 
 ## 8. Cost
 
-Approximate, per scan, at ArvanCloud rates:
+Approximate, per scan, all calls on Gemini 3.1 Flash-Lite at ArvanCloud rates
+(105,000 Toman per 1M input tokens, 315,000 per 1M output).
 
-| Stage | Model | Tokens | Toman |
-|---|---|---|---|
-| Call 1 × 3 (median) | Gemini 3.1 Flash-Lite | ~2,500 in / 400 out each | ~390 |
-| Call 2 | gpt-oss-120b | ~900 in / 280 out | ~64 |
-| Call 3 | gpt-oss-120b | ~900 in / 330 out | ~70 |
-| CV pipeline | — | — | 0 |
-| Overlay rendering | — | — | 0 |
-| **Total** | | | **~525** |
+| Stage | Tokens | Toman |
+|---|---|---|
+| Call 1 — vision, single pass | ~2,500 in / 400 out | ~390 |
+| Call 2 — user report | ~900 in / 280 out | ~183 |
+| Call 3 — specialist report | ~900 in / 330 out | ~199 |
+| CV pipeline | — | 0 |
+| Overlay rendering | — | 0 |
+| **Total, `SCORING_RUNS=1`** | | **~770** |
+| **Total, `SCORING_RUNS=3`** | (Call 1 ×3 = ~1,170) | **~1,550** |
 
-Ten thousand scans a month lands around 5.25M Toman. Cost is no longer a factor
-in any architecture decision.
+Ten thousand scans a month is roughly 7.7M Toman single-pass, or 15.5M with the
+median. Either way, cost is not a factor in any architecture decision — but the
+gap is large enough that you should not leave median-of-3 on before the rubric
+is stable enough to need it.
 
-Set `SCORING_RUNS=1` while iterating on the rubric — you'll re-run often and
-don't need the median until the prompt is stable.
+Set `SCORING_RUNS=1` while iterating. You will re-run often, and the median is
+only worth paying for once the prompt has settled.
 
----
+The image itself is roughly 1,100–1,300 of those input tokens. Downscaling
+selfies to around 1024px on the long edge before sending costs you nothing in
+assessment quality and keeps that number predictable.
 
 ## 9. Configuration
 
@@ -305,13 +330,15 @@ VISION_URL      Gateway URL for the vision model. On ArvanCloud the credential
                 is in the URL path, so treat the whole URL as a secret.
 VISION_MODEL    Model identifier
 VISION_KEY      Leave empty if the token is in the URL
-TEXT_URL        Gateway URL for gpt-oss-120b
-TEXT_MODEL      gpt-oss-120b
+TEXT_URL        Gateway URL for the report calls. Leave unset and it falls
+                back to VISION_URL — which is what you want while everything
+                runs on one model.
+TEXT_MODEL      Gemini-3.1-Flash-Lite-Preview (same model as vision, for now)
 GATEWAY_STYLE   openai | gemini — run probe.py to determine
 SCORING_RUNS    3 in production, 1 while iterating
 ```
 
-Both Gemini options are **Preview** models. Preview models change and get
+The model is a **Preview** release. Preview models change and get
 deprecated. The model name lives in config and the scoring call sits behind one
 function, so a swap is a config change plus a re-run of the eval set — half an
 hour, not a rebuild.
