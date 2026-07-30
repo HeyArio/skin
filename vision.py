@@ -180,23 +180,27 @@ def crop_region(bgr, pts, region, out_px=420, pad=1.0):
     This is the evidence for a finding: the claim says 'redness, left cheek',
     and this is the left cheek at a size where you can actually see it.
 
-    `pad` scales the region's bounding box. It defaults to 1.0 rather than
-    something roomier because squaring the box already contributes surrounding
-    skin on the narrow axis, and padding beyond that pulls an eye into every
-    cheek crop — at which point the reader looks at the eye and not at the
-    finding.
+    The square is placed on the hull's centroid and sized to the square root of
+    the hull's area — both rotation-invariant, which the alternative is not. A
+    bounding box grows when the region it contains is tilted, so on a turned or
+    tilted head a box-derived crop drifts off the region and pulls in whatever
+    is next to it; on the forehead that is the eyes, and then the reader looks
+    at the eyes instead of the finding. Equal-area sizing also adapts to shape
+    on its own: a wide shallow band gets a square that sits inside it rather
+    than one as wide as the band is long.
+
+    `pad` scales that square. It defaults to 1.0 because the crop already picks
+    up surrounding skin wherever the region is not itself square.
     """
     if region not in REGION_INDICES:
         return None
-    poly = region_polygon(pts, region)
-    x, y, w, h = cv2.boundingRect(poly)
-    # Squaring on the long side is right for a roughly square region and wrong
-    # for a wide flat one: the forehead spans temple to temple but is shallow,
-    # and a square that wide reaches down over the eyes. Cap the square at twice
-    # the short side and centre it, which keeps a wide region's crop on the
-    # region.
-    side = min(max(w, h), min(w, h) * 2) * pad
-    return crop_box(bgr, x + w / 2, y + h / 2, side, out_px)
+    poly = region_polygon(pts, region).astype(np.int32)
+    m = cv2.moments(poly)
+    if m["m00"] <= 0:
+        return None
+    area = cv2.contourArea(poly.astype(np.float32))
+    return crop_box(bgr, m["m10"] / m["m00"], m["m01"] / m["m00"],
+                    (area ** 0.5) * pad, out_px)
 
 
 def crop_spots(bgr, pts, spots, out_px=420, pad=3.0):
@@ -242,9 +246,75 @@ def crop_spots(bgr, pts, spots, out_px=420, pad=3.0):
 
 # ---------------------------------------------------------------- quality gate
 
+# Mirrored regions. A turned head foreshortens the far side of the face, and the
+# ratio of a region's area to its mirror's is a cheap, deterministic measure of
+# how much. On a frontal photo these sit near 1.0; past a moderate yaw the far
+# jawline drops below 0.3.
+MIRRORED = [("left_cheek", "right_cheek"),
+            ("jawline_left", "jawline_right"),
+            ("periorbital_left", "periorbital_right")]
+
+# Below this, a region is too foreshortened to measure or to show. Chosen from
+# the gap between a frontal face (~0.76 at worst) and a clearly turned one
+# (~0.31). Recalibrate on real photos.
+VISIBILITY_MIN = 0.60
+
+YAW_ADVISORY = 0.18   # far side starts to foreshorten
+YAW_FATAL = 0.35      # far side is gone; not worth a model call
+
+
+def face_axes(pts):
+    """The face's own left-right axis and its width along it.
+
+    Yaw has to be measured in this frame, not in the image's. A rolled head
+    rotates the nose-tip offset partly into the vertical, and an image-space
+    check reads that as less yaw than there is.
+    """
+    v = pts[454] - pts[234]
+    fw = float(np.linalg.norm(v))
+    return v / fw, fw
+
+
+def measure_yaw(pts):
+    """Nose-tip offset from the midline as a fraction of face width, in the
+    face's own frame, so head tilt does not contaminate it."""
+    ex, fw = face_axes(pts)
+    mid = (pts[234] + pts[454]) / 2
+    return abs(float(np.dot(pts[4] - mid, ex))) / fw
+
+
+def region_visibility(pts):
+    """Per-region visibility, 1.0 meaning not foreshortened relative to its
+    mirror. Unmirrored regions are always 1.0 — there is nothing to compare
+    them against, and none of them sit on the edge of a turning face."""
+    vis = {r: 1.0 for r in REGION_INDICES}
+    for a, b in MIRRORED:
+        aa = cv2.contourArea(region_polygon(pts, a).astype(np.float32))
+        ab = cv2.contourArea(region_polygon(pts, b).astype(np.float32))
+        if max(aa, ab) <= 0:
+            continue
+        ratio = min(aa, ab) / max(aa, ab)
+        vis[a if aa < ab else b] = round(ratio, 2)
+    return vis
+
+
+def foreshortened(pts):
+    """Regions too turned away to measure or to crop. Showing a reader a patch
+    of hair captioned 'right cheek' costs more trust than the missing finding
+    was ever worth."""
+    return sorted(r for r, v in region_visibility(pts).items() if v < VISIBILITY_MIN)
+
+
 def quality_gate(bgr, pts):
-    """Cheap local checks. Runs before you spend a token."""
-    issues = []
+    """Cheap local checks. Runs before you spend a token.
+
+    Two severities, because they call for different things. `issues` are fatal:
+    the photo cannot support an assessment and the pipeline stops before paying
+    for one. `advisories` are worth recording and worth telling the specialist,
+    but the photo is still worth analysing — most real selfies carry some tilt
+    or turn, and a gate that rejects them rejects the product.
+    """
+    issues, advisories = [], []
     h, w = bgr.shape[:2]
 
     if min(h, w) < 480:
@@ -254,44 +324,108 @@ def quality_gate(bgr, pts):
     if blur < 60:
         issues.append("image_blurry")
 
+    yaw, hidden = None, []
     if pts is not None:
-        fw = face_width(pts)
+        _, fw = face_axes(pts)
         if fw / w < 0.25:
             issues.append("face_too_small_in_frame")
-        # Rough yaw check: nose tip should sit near the midpoint of the face edges.
-        mid = (pts[234][0] + pts[454][0]) / 2
-        if abs(pts[4][0] - mid) / fw > 0.13:
-            issues.append("head_turned_too_far")
 
-    return {"usable": not issues, "issues": issues, "blur_score": float(round(blur, 1))}
+        yaw = measure_yaw(pts)
+        if yaw > YAW_FATAL:
+            issues.append("head_turned_too_far")
+        elif yaw > YAW_ADVISORY:
+            advisories.append("head_turned")
+
+        hidden = foreshortened(pts)
+        if hidden:
+            advisories.append("regions_foreshortened")
+
+    return {
+        "usable": not issues,
+        "issues": issues,
+        "advisories": advisories,
+        "blur_score": float(round(blur, 1)),
+        "yaw": None if yaw is None else round(yaw, 3),
+        "foreshortened": hidden,
+    }
 
 
 # ------------------------------------------------------------ measured metrics
 
-def measure_oiliness(bgr, pts):
-    """Specular highlights: oily skin reflects light differently. High value,
-    low saturation. Returns fraction of each T-zone region that is shining."""
+def face_mask(shape, pts, regions=None):
+    """Union of the analysis regions — the whole measurable face."""
+    m = np.zeros(shape[:2], np.uint8)
+    for region in (regions or REGION_INDICES):
+        m |= region_mask(shape, pts, region)
+    return m
+
+
+def measure_oiliness(bgr, pts, skip=()):
+    """Where the shine sits on this face.
+
+    Specular reflection bounces off the surface without meeting pigment, so it
+    carries the colour of the light rather than of the skin: bright *and*
+    desaturated. That conjunction is the signature, and it is what this looks
+    for.
+
+    Both thresholds come from the whole face's own distribution, which matters
+    twice over. It cancels exposure and white balance, which no phone selfie
+    controls for. And it removes a hard ceiling in the previous version, where
+    the threshold was a per-region percentile — that made the answer 'is the
+    top 8% of this region brighter than the rest of it', which by construction
+    could never exceed 0.08 no matter how oily the skin was.
+
+    What this is NOT is an absolute measure of sebum. A photograph cannot give
+    you one: a directionally lit face has a bright side, and no amount of pixel
+    work separates 'lit' from 'oily' in a single uncontrolled frame. Read it as
+    a within-face distribution — which is the clinically interesting axis
+    anyway, since an oily T-zone against dry cheeks is what a routine is built
+    around. `distribution` is the honest headline; the per-region shares are
+    the detail behind it.
+    """
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     S, V = hsv[:, :, 1], hsv[:, :, 2]
-    out = {}
+
+    face = face_mask(bgr.shape, pts)
+    if not face.any():
+        return {"distribution": "not assessed", "shine_share": {}}
+
+    s_lo = np.percentile(S[face > 0], 15)
+    v_hi = np.percentile(V[face > 0], 85)
+    spec = (S < s_lo) & (V > v_hi)
+
+    shares = {}
     for region in T_ZONE + ["left_cheek", "right_cheek"]:
+        if region in skip:
+            continue
         m = region_mask(bgr.shape, pts, region)
         area = int(m.sum() / 255)
         if area == 0:
             continue
-        v_thresh = np.percentile(V[m > 0], 92)
-        shine = ((V > max(v_thresh, 180)) & (S < 60) & (m > 0)).sum()
-        out[region] = round(float(shine) / area, 3)
-    return out
+        shares[region] = round(float((spec & (m > 0)).sum()) / area, 3)
+
+    t = [shares[r] for r in T_ZONE if r in shares]
+    c = [shares[r] for r in ("left_cheek", "right_cheek") if r in shares]
+    if t and c:
+        # Guarded: matte cheeks make the raw ratio explode, and the answer to
+        # "how many times shinier" is not a number anyone should read anyway.
+        ratio = float(np.mean(t)) / max(float(np.mean(c)), 0.005)
+        dist = "t_zone" if ratio >= 2 else "cheeks" if ratio < 0.5 else "even"
+    else:
+        dist = "not assessed"
+
+    return {"distribution": dist, "shine_share": shares}
 
 
-def measure_pores(bgr, pts):
+def measure_pores(bgr, pts, skip=()):
     """Local high-frequency contrast, normalised by face width so the score is
     scale-invariant. Maps to the same 0-10 scale as the LLM metrics."""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     fw = face_width(pts)
     scores, hot = {}, []
     for region in ["nose", "left_cheek", "right_cheek"]:
+        if region in skip:
+            continue
         m = region_mask(bgr.shape, pts, region)
         if m.sum() == 0:
             continue
@@ -307,31 +441,62 @@ def measure_pores(bgr, pts):
     return {"score": overall, "per_region": scores, "regions": hot}
 
 
-def measure_blemishes(bgr, pts):
-    """Blob detection on the LAB a-channel. Output doubles as your marker
-    layer — these coordinates are in original image pixels."""
+def blemish_field(bgr, pts):
+    """The skin the detector is allowed to look at, and local redness excess
+    over it.
+
+    Two exclusions beyond the eyes and mouth, both learned from false positives
+    the evidence crops made visible. The region hulls overshoot onto hair when
+    it falls across the face, so dark pixels are dropped. And the hulls' own
+    edges are where the blurred background estimate is least reliable, so the
+    mask is eroded before anything is measured there.
+    """
     lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
-    a = lab[:, :, 1].astype(np.float32)
+    L, a = lab[:, :, 0].astype(np.float32), lab[:, :, 1].astype(np.float32)
     fw = face_width(pts)
 
-    face = np.zeros(bgr.shape[:2], np.uint8)
-    for region in REGION_INDICES:
-        face |= region_mask(bgr.shape, pts, region)
-    # Exclude eyes and mouth — they are red and are not blemishes.
+    face = face_mask(bgr.shape, pts)
     for region in ["periorbital_left", "periorbital_right", "perioral"]:
         face &= ~region_mask(bgr.shape, pts, region)
 
-    # Local redness excess: how much redder than the surrounding skin.
-    bg = cv2.GaussianBlur(a, (0, 0), fw / 12)
-    excess = a - bg
-    excess[face == 0] = 0
+    k = max(3, int(fw * 0.012)) | 1
+    face = cv2.erode(face, np.ones((k, k), np.uint8))
+    if face.any():
+        # Hair, nostril and deep shadow. All are much darker than lit skin and
+        # all of them read as locally red against a blurred neighbourhood.
+        face[L < np.median(L[face > 0]) * 0.72] = 0
 
-    thresh = float(np.percentile(excess[face > 0], 99)) if (face > 0).any() else 0
-    binary = ((excess > max(thresh, 3.0)) & (face > 0)).astype(np.uint8) * 255
+    excess = a - cv2.GaussianBlur(a, (0, 0), fw / 12)
+    excess[face == 0] = 0
+    return face, excess, fw
+
+
+def measure_blemishes(bgr, pts):
+    """Blob detection on the LAB a-channel. Output doubles as your marker
+    layer — these coordinates are in original image pixels.
+
+    The threshold is a robust multiple of the image's own noise, not a fixed
+    percentile. A percentile keeps a *constant fraction* of pixels whatever is
+    on the face, so a clear face and a badly broken-out one returned nearly the
+    same count. Median plus 2 MAD-sigma adapts to noise without adapting to how
+    much there is to find.
+    """
+    face, excess, fw = blemish_field(bgr, pts)
+    if not face.any():
+        return {"count": 0, "spots": []}
+
+    d = excess[face > 0]
+    med = float(np.median(d))
+    sigma = 1.4826 * float(np.median(np.abs(d - med)))
+
+    binary = ((excess > med + 2.0 * sigma) & (face > 0)).astype(np.uint8) * 255
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    lo, hi = (fw * 0.008) ** 2 * 3.14, (fw * 0.055) ** 2 * 3.14
+    # The floor is the smallest blob worth calling a spot. It was 0.008 of face
+    # width, which is larger than most real blemish cores once thresholded —
+    # 68 of 72 candidates on the test face were being discarded by it alone.
+    lo, hi = (fw * 0.004) ** 2 * 3.14, (fw * 0.055) ** 2 * 3.14
     spots = []
     for c in contours:
         area = cv2.contourArea(c)
@@ -345,9 +510,18 @@ def measure_blemishes(bgr, pts):
 
 
 def measure_all(bgr, pts):
+    """Every deterministic measurement, with foreshortened regions left out.
+
+    A region turned away from the camera still has a hull and still has pixels,
+    so it still produces a number — one that describes the shadow it is sitting
+    in. Dropping it is more useful than reporting it, and the reviewing
+    specialist gets told which ones were dropped.
+    """
+    skip = foreshortened(pts)
     return {
-        "oiliness": measure_oiliness(bgr, pts),
-        "pore_size": measure_pores(bgr, pts),
+        "oiliness": measure_oiliness(bgr, pts, skip=skip),
+        "pore_size": measure_pores(bgr, pts, skip=skip),
         "blemishes": measure_blemishes(bgr, pts),
         "face_width_px": round(face_width(pts), 1),
+        "not_measured": skip,
     }

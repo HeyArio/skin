@@ -104,7 +104,7 @@ shown to a language model.**
 
 | Metric | Who produces it | Why |
 |---|---|---|
-| Oiliness | OpenCV | Specular highlights are a physical measurement. Oily skin reflects light differently — high value, low saturation in HSV. A model would guess; the pixels already know. |
+| Oiliness | OpenCV | Specular reflection never meets pigment, so it carries the colour of the light rather than the skin: bright *and* desaturated. That conjunction is measurable. **Its magnitude is not** — see below. |
 | Pore size | OpenCV | High-frequency local contrast, band-passed and normalised by face width. |
 | Blemishes | OpenCV | Blob detection on the LAB a-channel. Returns exact pixel coordinates — which also become the marker layer. |
 | Dryness, texture, redness, pigmentation, lines | Gemini | Genuinely qualitative. This is what vision models are good at. |
@@ -114,6 +114,23 @@ shown to a language model.**
 Everything measured is **normalised by face width** (the distance between
 landmarks 234 and 454). Without that, pore and blemish sizes would just be
 measuring how close the person held their phone.
+
+### Oiliness is a distribution, not a quantity
+
+A single uncontrolled selfie cannot tell you how oily a face is. A directionally
+lit face has a bright side, and nothing in the pixels separates "lit" from
+"oily" in one frame. Any absolute number would be a number about the lighting.
+
+So oiliness is reported as a **within-face distribution** — `t_zone`, `even` or
+`cheeks` — with the per-region shares behind it. That is exposure-independent,
+it is what survives the confound, and it happens to be the clinically
+interesting axis anyway: an oily T-zone against dry cheeks is what a routine
+gets built around.
+
+Both thresholds are drawn from the whole face's own distribution. Taking them
+per region, as the first version did, capped the answer at 0.08 by construction
+— the question became "is the top 8% of this region brighter than the rest of
+it", which has the same answer on every face.
 
 Vision-language models are unreliable at precise pixel coordinates. Asking one
 for bounding boxes around blemishes produces markers vaguely near the right
@@ -185,15 +202,44 @@ each labelled polygon sits where it should. Wrong polygons mean the overlay
 lands in the wrong place, every measured metric samples the wrong pixels, *and*
 the evidence crops show the wrong patch of skin.
 
-The quality gate runs before any API call: resolution, Laplacian blur variance,
-face size in frame, and a rough yaw check comparing nose-tip position against
-the midpoint of the face edges.
+### The quality gate
+
+Runs before any API call: resolution, Laplacian blur variance, face size in
+frame, and yaw. It has **two severities**, because they call for different
+things.
+
+`issues` are fatal. The photo cannot support an assessment, and `analyse`
+returns a rejection without paying for one. `advisories` are recorded and shown
+but do not stop anything — most real selfies carry some tilt or turn, and a gate
+that rejects those rejects the product. `run.py --no-gate` analyses everything
+regardless, which is how you calibrate the thresholds: you cannot tune a gate
+from the near side of it.
+
+Yaw is measured **in the face's own frame**, not the image's. A rolled head
+rotates the nose-tip offset partly into the vertical, and an image-space
+comparison reads that as less yaw than there is — on the test photos it
+understated a real turn by about a fifth.
+
+Yaw does not only decide whether a photo is usable, though. Past a moderate
+turn, the far side of the face is foreshortened, and a region that is turned
+away still has a hull, still has pixels, and still yields a number — one that
+describes the shadow it is sitting in. So `region_visibility` compares each
+mirrored region's area against its twin, and anything below `VISIBILITY_MIN` is
+dropped from the measurements and from the evidence crops, and listed in
+`not_measured`. On a frontal photo these ratios sit near 1.0; on a turned one
+the far jawline falls to about 0.3.
+
+Dropping a region is better than reporting it, and saying which ones were
+dropped is better than either. A crop of hair captioned "right cheek" costs more
+trust than the missing finding was ever worth.
 
 ### llm.py
 
 Supports both request shapes — OpenAI-compatible (`/chat/completions` with
 `image_url`) and Gemini-native (`inline_data`) — selected by `GATEWAY_STYLE`,
-because proxy gateways vary in which they implement.
+because proxy gateways vary in which they implement. Both the vision call and
+the two text calls build through the same `_payload`, so the reports cannot
+quietly stay OpenAI-shaped on a gateway where `GATEWAY_STYLE=gemini`.
 
 Includes retry with backoff, and `_parse_json`, which strips markdown fences and
 falls back to a brace-matching regex, because models sometimes wrap JSON despite
@@ -385,7 +431,8 @@ VISION_KEY      Leave empty if the token is in the URL
 TEXT_URL        Gateway URL for the report calls. Leave unset and it falls
                 back to VISION_URL — which is what you want while everything
                 runs on one model.
-TEXT_MODEL      Gemini-3.1-Flash-Lite-Preview (same model as vision, for now)
+TEXT_MODEL      Leave unset and it falls back to VISION_MODEL, which is what
+                you want while everything runs on one model
 GATEWAY_STYLE   openai | gemini — run probe.py to determine
 SCORING_RUNS    3 in production, 1 while iterating
 ```
@@ -406,6 +453,7 @@ python run.py images/ --mock                # 3. dry run, no tokens
 python run.py images/ --runs 1              # 4. first real pass
 python run.py images/                       # 5. median-of-3 once tuned
 python run.py images/ --pdf                 # 6. same page as out/review.pdf
+python run.py images/ --no-gate             # analyse what the gate would reject
 ```
 
 Open `out/review.html`.
@@ -466,8 +514,10 @@ When you do build it:
 | Receipts per image | `pipeline.build_receipts`, `limit` | 4 fits one row at print width |
 | Blur threshold | `vision.quality_gate`, currently 60 | Calibrate against `blur_score` on real photos |
 | Face-size minimum | `vision.quality_gate`, 0.25 of frame width | |
-| Yaw tolerance | `vision.quality_gate`, 0.13 | |
-| Blemish size limits | `vision.measure_blemishes` | Fractions of face width |
-| Oiliness threshold | `vision.measure_oiliness` | 92nd percentile of V, floor 180 |
+| Yaw tolerance | `vision.YAW_ADVISORY` 0.18, `vision.YAW_FATAL` 0.35 | Set from three photos. Recalibrate on twenty |
+| Region visibility floor | `vision.VISIBILITY_MIN`, 0.60 | Frontal photos sit above 0.76, turned ones below 0.31 |
+| Blemish size limits | `vision.measure_blemishes` | Fractions of face width. The floor was 0.008 and discarded 68 of 72 candidates |
+| Blemish sensitivity | `vision.measure_blemishes`, median + 2.0 sigma | MAD-based, so it adapts to noise but not to how much there is to find |
+| Oiliness percentiles | `vision.measure_oiliness`, S below 15th, V above 85th | Face-wide, not per region |
 | Pore score scaling | `vision.measure_pores`, ×2.2 | Arbitrary — calibrate against faces you can judge |
 | Rubric anchors | `prompts.SCORING_SYSTEM` | The highest-leverage file in the project |

@@ -60,13 +60,17 @@ def build_receipts(bgr, pts, findings, limit=4):
     cited by several metrics gets one crop carrying all of them, which is also
     what stops the strip from repeating the same patch of cheek three times.
     """
+    # A region turned away from the camera crops to hair and shadow. Captioning
+    # that "right cheek" costs more trust than the missing crop was worth.
+    skip = set(findings.get("not_measured") or [])
+
     cited = {}
     for name, data in findings.get("metrics", {}).items():
         score = data.get("score")
         if score is None:
             continue
         for region in data.get("regions") or []:
-            if region in vision.REGION_INDICES:
+            if region in vision.REGION_INDICES and region not in skip:
                 cited.setdefault(region, []).append((name, score))
 
     # Measured metrics earn a receipt on the same terms as judged ones.
@@ -145,7 +149,7 @@ def render_overlay(findings, pts, w, h):
             f'<g class="layer" data-layer="spots">{"".join(spots)}</g></svg>')
 
 
-def analyse(path, mock=False, runs=None):
+def analyse(path, mock=False, runs=None, gate_images=True):
     bgr = cv2.imread(path)
     if bgr is None:
         raise RuntimeError(f"could not read {path}")
@@ -156,6 +160,14 @@ def analyse(path, mock=False, runs=None):
         return {"path": path, "rejected": "no_face_detected"}
 
     gate = vision.quality_gate(bgr, pts)
+    # The gate exists to stop before the money, not to annotate after it. Pass
+    # gate_images=False (run.py --no-gate) to analyse everything anyway, which
+    # is what you want while calibrating the thresholds against real photos —
+    # you cannot tune a gate you cannot see the far side of.
+    if gate_images and not gate["usable"]:
+        return {"path": path, "rejected": ", ".join(gate["issues"]),
+                "local_quality": gate}
+
     measured = vision.measure_all(bgr, pts)
 
     if mock:
@@ -177,6 +189,7 @@ def analyse(path, mock=False, runs=None):
         "pore_size": measured["pore_size"],
         "blemishes": measured["blemishes"],
         "face_width_px": measured["face_width_px"],
+        "not_measured": measured["not_measured"],
     }
     # Bands are what the UI shows. Raw scores stay internal — a 6-to-7 wobble is
     # invisible in a band and glaring on a dial.

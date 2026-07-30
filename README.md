@@ -55,6 +55,7 @@ the overlay renderer and the review page without spending a token.
 python run.py images/            # median-of-3 scoring
 python run.py images/ --runs 1   # single pass, while iterating on the rubric
 python run.py images/ --pdf      # also write out/review.pdf
+python run.py images/ --no-gate  # analyse photos the quality gate would reject
 ```
 
 Open `out/review.html`.
@@ -72,7 +73,12 @@ either way — it is what gets printed. Only the layer toggles are lost.
   A rise means the prompt has drifted or the model changed under you.
 - **Rejections** — how many real photos fail the quality gate. If it's most of
   them, your gate is too strict and users will bounce before they ever see a
-  result. Thresholds are in `vision.quality_gate`.
+  result. Thresholds are in `vision.quality_gate`; run `--no-gate` to see what
+  you would have got from the photos it turned away.
+- **Advisories and `not_measured`** — the amber note on a card. The photo was
+  analysed, but some regions were too turned away to measure and were dropped.
+  A lot of these means your capture flow needs to coach people to face the
+  camera, not that the analysis is failing.
 - **The evidence crops.** Each finding is shown next to the zoomed patch of skin
   it came from. Can you see the thing the band claims is there? If you can't,
   the score is wrong, the region polygon is wrong, or the rubric anchor is too
@@ -101,6 +107,12 @@ probe.py      endpoint shape detector
 - **Oiliness, pores and blemishes never touch the model.** They're measured with
   OpenCV — deterministic, free, and they don't drift. The blemish coordinates
   double as the marker layer.
+- **Oiliness is a distribution, not a quantity** — `t_zone`, `even` or `cheeks`.
+  A photo can't tell you how oily a face is, only where the shine sits: a
+  directionally lit face has a bright side and no pixel work separates "lit"
+  from "oily" in one frame.
+- **Regions turned away from the camera are dropped, not guessed at**, and
+  listed in `not_measured`.
 - **Everything is normalised by face width**, so scores don't change with how
   close the phone was held.
 - **Every finding gets an evidence crop** — the actual pixels it came from, at

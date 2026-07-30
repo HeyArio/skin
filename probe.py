@@ -8,7 +8,6 @@ Gateways that proxy Gemini sometimes implement only the text path, or want a
 different image encoding than the native API. Five minutes here saves a day.
 """
 import base64
-import io
 import json
 import os
 
@@ -43,7 +42,10 @@ CASES = {
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{B64}"}},
             {"type": "text", "text": ASK}]}],
     }),
-    "gemini native / inline_data": (f"{URL}/models/gemini:generateContent", {
+    # The model name belongs in the path here — probing a literal "gemini"
+    # fails on every gateway, which reads as "this gateway has no native path"
+    # and sends you to the wrong GATEWAY_STYLE.
+    "gemini native / inline_data": (f"{URL}/models/{MODEL}:generateContent", {
         "contents": [{"role": "user", "parts": [
             {"inline_data": {"mime_type": "image/png", "data": B64}},
             {"text": ASK}]}],

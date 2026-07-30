@@ -57,6 +57,7 @@ h3:first-child{margin-top:0}
 pre{background:#f5f3ef;padding:11px;border-radius:7px;overflow:auto;font-size:11px;max-height:280px;margin:0}
 .report{background:#f5f3ef;padding:12px;border-radius:7px;white-space:pre-wrap;margin:0}
 .warn{background:#fdecea;border-left:3px solid #A32D2D;padding:9px 12px;border-radius:5px;margin:8px 0;font-size:13px}
+.note{background:#fdf5e6;border-left:3px solid #EF9F27;padding:8px 12px;border-radius:5px;margin:8px 0;font-size:12.5px}
 .pills span{display:inline-block;background:#eceae5;border-radius:20px;padding:2px 10px;margin:0 5px 5px 0;font-size:12px}
 .receipts{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:10px;margin:0}
 .receipt{border:1px solid #e5e3de;border-radius:8px;overflow:hidden;background:#fff}
@@ -67,8 +68,9 @@ pre{background:#f5f3ef;padding:11px;border-radius:7px;overflow:auto;font-size:11
 .cap{padding:7px 9px;line-height:1.35}
 .cap strong{display:block;font-size:12px}
 .cap span{font-size:11px;color:#7a7770}
-.cap i{font-style:normal;white-space:nowrap}
-.cap i+i:before{content:" · ";white-space:normal}
+/* One finding per line. In a column this narrow a run of middot-separated
+   findings either overflows or breaks in the middle of a phrase. */
+.cap i{font-style:normal;display:block;overflow-wrap:anywhere}
 
 /* Grid children default to min-width:auto, so one long unbreakable line in the
    JSON dump widens the whole column and pushes the evidence strip off the page.
@@ -108,6 +110,22 @@ document.querySelectorAll('.toggles button').forEach(b=>{
 """
 
 
+def for_display(f):
+    """Trim the findings for human reading.
+
+    The review page is read by a person and results.json by a machine, so the
+    full blemish coordinate list belongs in one and not the other — on a broken-
+    out face it runs to a page of x/y/r that buries everything around it. The
+    largest few are enough to check the detector against the overlay.
+    """
+    d = json.loads(json.dumps(f))
+    spots = d.get("blemishes", {}).get("spots") or []
+    if len(spots) > 6:
+        d["blemishes"]["spots"] = spots[:6] + [
+            f"... {len(spots) - 6} more, full list in results.json"]
+    return d
+
+
 def receipts_html(receipts):
     """The evidence strip: every claim next to the pixels it came from.
 
@@ -120,8 +138,8 @@ def receipts_html(receipts):
     out = []
     for rc in receipts:
         zoom = (f'<b>{rc["zoom"]:.1f}&times;</b>' if rc.get("zoom", 0) >= 1.2 else "")
-        # Each metric is its own nowrap chunk so a narrow column breaks between
-        # findings instead of stranding a separator at the end of a line.
+        # Each metric is its own element so the caption stacks cleanly in a
+        # narrow column instead of running together.
         if rc.get("metrics"):
             claim = "".join(f'<i>{html.escape(m["metric"])} {html.escape(m["band"])}</i>'
                             for m in rc["metrics"])
@@ -145,6 +163,17 @@ def card(r):
     issues = (f.get("local_quality", {}).get("issues") or []) + \
              (f.get("image_quality", {}).get("issues") or [])
     warn = f'<div class="warn">Quality: {", ".join(issues)}</div>' if issues else ""
+
+    # Not failures — the photo was still worth analysing. But a region that was
+    # dropped needs to be visible as dropped, or its absence reads as a clean
+    # result.
+    adv = f.get("local_quality", {}).get("advisories") or []
+    skipped = f.get("not_measured") or []
+    if adv or skipped:
+        note = ", ".join(adv)
+        if skipped:
+            note += f" — not measured: {', '.join(skipped)}"
+        warn += f'<div class="note">{html.escape(note)}</div>'
     trip = (f'<div class="warn">Denylist tripped on "{r["denylist_trip"]}" — '
             f'fallback text shown to user</div>') if r.get("denylist_trip") else ""
     spread = f.get("_spread")
@@ -179,7 +208,7 @@ def card(r):
 </div>
 <div class="json">
   <h3>Findings JSON</h3>
-  <pre>{html.escape(json.dumps(f, indent=2, ensure_ascii=False))}</pre>
+  <pre>{html.escape(json.dumps(for_display(f), indent=2, ensure_ascii=False))}</pre>
 </div></div>"""
 
 
@@ -245,6 +274,9 @@ def main():
     ap.add_argument("--debug-mesh", action="store_true")
     ap.add_argument("--pdf", action="store_true",
                     help="also render out/review.pdf (needs Chrome/Chromium)")
+    ap.add_argument("--no-gate", action="store_true",
+                    help="analyse images the quality gate would reject — use "
+                         "this to calibrate the thresholds against real photos")
     a = ap.parse_args()
 
     os.makedirs("out", exist_ok=True)
@@ -261,7 +293,8 @@ def main():
     for i, p in enumerate(files, 1):
         print(f"[{i}/{len(files)}] {os.path.basename(p)} ... ", end="", flush=True)
         try:
-            r = pipeline.analyse(p, mock=a.mock, runs=a.runs)
+            r = pipeline.analyse(p, mock=a.mock, runs=a.runs,
+                                 gate_images=not a.no_gate)
             results.append(r)
             print("rejected: " + r["rejected"] if r.get("rejected") else "ok")
         except Exception as e:
