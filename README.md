@@ -1,7 +1,7 @@
 # Skin analysis — Phase 0 harness
 
 Image in → findings JSON + user report + specialist report + toggleable overlay.
-Batches a folder and builds one review page you can hand to your specialist.
+Batches a folder and builds one PDF report you can hand to your specialist.
 
 **The question this answers is not "does the code work" — it's "would she act on
 this report?"** Everything else is solvable engineering. Run 20 real photos
@@ -47,24 +47,25 @@ python run.py images/ --mock
 ```
 
 Uses `mock_scoring.json` instead of calling the model. Verifies the CV pipeline,
-the overlay renderer and the review page without spending a token.
+the overlay renderer and the report without spending a token.
 
 ## 4. Real run
 
 ```bash
 python run.py images/            # median-of-3 scoring
 python run.py images/ --runs 1   # single pass, while iterating on the rubric
-python run.py images/ --pdf      # also write out/review.pdf
 python run.py images/ --no-gate  # analyse photos the quality gate would reject
+python run.py images/ --html     # stop at HTML, which keeps the layer toggles
 ```
 
-Open `out/review.html`.
+Open `out/report.pdf`. It is printed by headless Chrome or Chromium, found via
+`CHROME_BIN`, a Playwright cache, or a platform install. If none is found the
+HTML is still written and the error tells you how to fix it.
 
-`--pdf` prints the same page with headless Chrome or Chromium, found via
-`CHROME_BIN`, a Playwright cache, or a system install. The HTML is written
-either way — it is what gets printed. Only the layer toggles are lost.
+`out/results.json` holds the same run in machine-readable form — that is where
+the raw findings live, not in the report.
 
-## What to look at in the review page
+## What to look at in the report
 
 - **Score spread** — flagged when median-of-3 disagrees by more than 2. That's
   the rubric being ambiguous, not the model being bad. Tighten the anchors in
@@ -75,7 +76,7 @@ either way — it is what gets printed. Only the layer toggles are lost.
   them, your gate is too strict and users will bounce before they ever see a
   result. Thresholds are in `vision.quality_gate`; run `--no-gate` to see what
   you would have got from the photos it turned away.
-- **Advisories and `not_measured`** — the amber note on a card. The photo was
+- **The Confidence section** — what the analysis could not see. The photo was
   analysed, but some regions were too turned away to measure and were dropped.
   A lot of these means your capture flow needs to coach people to face the
   camera, not that the analysis is failing.
@@ -98,7 +99,8 @@ prompts.py    rubric, both report prompts, denylist   <- tune this most
 vision.py     FaceMesh regions, quality gate, CV metrics
 llm.py        gateway client, median-of-3
 pipeline.py   orchestration + SVG overlay renderer
-run.py        CLI + review page builder
+report.py     the report document — what the page says
+run.py        CLI, batching, PDF rendering
 probe.py      endpoint shape detector
 ```
 

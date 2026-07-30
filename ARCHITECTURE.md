@@ -149,7 +149,8 @@ vision.py        Landmark detection, region polygons,
                  quality gate, all CV measurements
 llm.py           Gateway client, median-of-3, JSON recovery
 pipeline.py      Orchestration + the SVG overlay renderer
-run.py           CLI, batching, review-page builder
+report.py        The report document — what the page says
+run.py           CLI, batching, PDF rendering
 probe.py         Endpoint shape detector (run this first)
 mock_scoring.json  Canned scoring output for --mock runs
 .env             Gateway URLs and settings (never commit)
@@ -257,10 +258,27 @@ UI shows.
 
 ### run.py
 
-Batches a folder and writes `out/review.html` — every image with its overlay,
-toggle buttons, the evidence crops, both reports, and the raw JSON. Optionally
-prints the same page to `out/review.pdf`. That page is the actual deliverable of
-Phase 0.
+Batches a folder, then renders `out/report.pdf` through headless Chrome. That
+document is the deliverable of Phase 0. `--html` stops at `out/report.html`,
+which is the same page with the layer toggles still working.
+
+### report.py
+
+What the report says, separated from how it gets printed.
+
+**The findings JSON is not in the document.** It used to be, and it should not
+have been: a reviewer should not have to read a data structure to find out what
+was found. Every field worth reading now has a line of its own — the metrics as
+a severity chart, the measurements as sentences, the flagged patterns as their
+own block, and a plain statement of what could not be assessed. The
+machine-readable copy lives in `out/results.json`, where a machine can have it.
+
+Metrics are ordered worst-first rather than in declaration order, which is most
+of what stops two reports from reading identically.
+
+One line of provenance sits at the foot in small type — blur, yaw, face width,
+scoring runs, score spread, denylist trips. It is not report content; it is what
+you check when a report looks wrong.
 
 ---
 
@@ -296,8 +314,8 @@ The three layers:
 
 | Layer | Source | Rendering |
 |---|---|---|
-| heat | Region polygons + metric score | Filled polygon, `fill-opacity = score/10 × 0.4` |
-| regions | Same polygons | Stroked outline, colour from a 6-step severity ramp |
+| heat | Region polygons + worst metric citing each | Filled polygon at a fixed 0.25 opacity, colour from the 5-step band ramp |
+| regions | Same polygons | Stroked outline, same colour |
 | spots | Blemish blob centroids | `<circle>` per spot, radius from blob area |
 
 Toggling is `opacity` on the `<g>` group. No re-render, no second API call,
@@ -452,23 +470,23 @@ python run.py images/face.jpg --debug-mesh  # 2. are the regions in the right pl
 python run.py images/ --mock                # 3. dry run, no tokens
 python run.py images/ --runs 1              # 4. first real pass
 python run.py images/                       # 5. median-of-3 once tuned
-python run.py images/ --pdf                 # 6. same page as out/review.pdf
 python run.py images/ --no-gate             # analyse what the gate would reject
+python run.py images/ --html                # stop at HTML, keep the toggles
 ```
 
-Open `out/review.html`.
+Open `out/report.pdf`.
 
-`--pdf` prints that same page with headless Chrome or Chromium — whichever of
-`CHROME_BIN`, a Playwright cache, or a system install it finds first. Rendering
-the HTML rather than building the PDF separately means one layout to maintain
-and no second renderer to disagree with the first; the print rules live in the
-same stylesheet, under `@media print`. The HTML is still written either way,
-since it is what gets printed. Only the toggles are lost, for the obvious
-reason.
+The PDF is printed by headless Chrome or Chromium — whichever of `CHROME_BIN`,
+a Playwright cache, or a platform install it finds first (Windows and macOS do
+not put one on `PATH`, so their install locations are named explicitly).
+Rendering the HTML rather than composing the PDF separately means one layout to
+maintain and no second renderer to disagree with the first; the print rules live
+in the same stylesheet under `@media print`. If no browser is found, the HTML is
+still written and the error says how to fix it.
 
 ---
 
-## 11. What to look at in the review page
+## 11. What to look at in the report
 
 - **Score spread** — flagged above 2. Tighten the rubric anchors.
 - **Denylist trips** — track the rate over time.

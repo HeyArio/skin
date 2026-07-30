@@ -18,7 +18,15 @@ if _mismatch:
         f"region vocabulary mismatch between prompts.REGIONS and "
         f"vision.REGION_INDICES: {sorted(_mismatch)}")
 
-RAMP = ["#E1F5EE", "#9FE1CB", "#FAC775", "#EF9F27", "#D85A30", "#A32D2D"]
+# One hue, light to dark, one step per band.
+#
+# It used to run teal -> yellow -> orange -> red. Two problems with that on this
+# particular product. A multi-hue ramp for magnitude is unreadable without a
+# scale legend, and — worse here — warm heat drawn over skin is very hard to
+# tell apart from the erythema and blemishes it is drawn on top of. A cool hue
+# reads unambiguously as annotation. The report ships a scale legend with it.
+RAMP = ["#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281"]
+SPOT_COLOUR = "#d03b3b"
 BANDS = [(2, "minimal"), (4, "mild"), (6, "moderate"), (8, "notable"), (10, "significant")]
 
 
@@ -29,7 +37,10 @@ def band(score):
 
 
 def _colour(score):
-    return RAMP[min(5, max(0, score) // 2)]
+    """Colour by band, so the overlay and the report's severity scale are the
+    same five steps rather than two different quantisations of one number."""
+    names = [n for _, n in BANDS]
+    return RAMP[names.index(band(score))]
 
 
 REGION_LABEL = {
@@ -77,7 +88,9 @@ def build_receipts(bgr, pts, findings, limit=4):
     for region, score in (findings.get("pore_size", {}).get("per_region") or {}).items():
         if region in vision.REGION_INDICES and region in \
                 (findings.get("pore_size", {}).get("regions") or []):
-            cited.setdefault(region, []).append(("pore size", score))
+            # Keyed as the metric is keyed everywhere else, so the report's
+            # label lookup finds it rather than falling through to raw text.
+            cited.setdefault(region, []).append(("pore_size", score))
 
     ranked = sorted(cited.items(),
                     key=lambda kv: (-max(s for _, s in kv[1]), -len(kv[1]), kv[0]))
@@ -95,7 +108,7 @@ def build_receipts(bgr, pts, findings, limit=4):
             "kind": "region",
             "region": region,
             "label": REGION_LABEL.get(region, region.replace("_", " ").capitalize()),
-            "claim": " · ".join(f"{n} {band(s)}" for n, s in metrics),
+            "claim": " · ".join(f"{n.replace('_', ' ')} {band(s)}" for n, s in metrics),
             "metrics": [{"metric": n, "score": s, "band": band(s)} for n, s in metrics],
             "zoom": crop["zoom"], "source_px": crop["source_px"], "box": crop["box"],
             "image_b64": _jpeg_b64(crop["image"]),
@@ -124,23 +137,33 @@ def render_overlay(findings, pts, w, h):
     heat, outlines, spots = [], [], []
     stroke = max(1.5, w / 400)
 
-    for name, data in findings.get("metrics", {}).items():
+    # One fill per region, at its strongest finding — not one per metric. Three
+    # metrics citing the same cheek used to draw three stacked translucent
+    # polygons there, and the opacities compounded into a near-opaque patch. The
+    # face underneath is the thing being annotated; it has to stay visible.
+    worst = {}
+    for data in findings.get("metrics", {}).values():
         score = data.get("score")
         if score is None:
             continue
         for region in data.get("regions") or []:
-            if region not in vision.REGION_INDICES:
-                continue
-            pl = vision.region_polygon(pts, region)
-            pstr = " ".join(f"{x},{y}" for x, y in pl)
-            c = _colour(score)
-            heat.append(f'<polygon points="{pstr}" fill="{c}" fill-opacity="{score/10*0.40:.2f}"/>')
-            outlines.append(
-                f'<polygon points="{pstr}" fill="none" stroke="{c}" stroke-width="{stroke:.1f}"/>')
+            if region in vision.REGION_INDICES:
+                worst[region] = max(worst.get(region, 0), score)
+
+    for region, score in sorted(worst.items()):
+        pstr = " ".join(f"{x},{y}" for x, y in vision.region_polygon(pts, region))
+        c = _colour(score)
+        # Fixed opacity; severity is carried by the colour step alone. Encoding
+        # it twice — darker AND more opaque — buries the photograph, and the
+        # reader is here to look at the skin, not at the annotation. Band names
+        # are printed beside every metric, so colour is never the only channel.
+        heat.append(f'<polygon points="{pstr}" fill="{c}" fill-opacity="0.25"/>')
+        outlines.append(
+            f'<polygon points="{pstr}" fill="none" stroke="{c}" stroke-width="{stroke:.1f}"/>')
 
     for s in findings.get("blemishes", {}).get("spots", []):
         spots.append(f'<circle cx="{s["x"]}" cy="{s["y"]}" r="{s["r"]}" fill="none" '
-                     f'stroke="#A32D2D" stroke-width="{max(1.2, w/500):.1f}"/>')
+                     f'stroke="{SPOT_COLOUR}" stroke-width="{max(1.2, w/500):.1f}"/>')
 
     return (f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" '
             f'style="position:absolute;inset:0;width:100%;height:100%">'
