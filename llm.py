@@ -12,7 +12,7 @@ import time
 
 import requests
 
-import config  # noqa: F401  — importing it loads .env
+import config  # importing it loads .env
 
 VISION_URL = config.require("VISION_URL").rstrip("/")
 VISION_KEY = os.environ.get("VISION_KEY", "")
@@ -42,11 +42,15 @@ def _post(url, payload, key, attempts=3):
             r = requests.post(url, headers=_headers(key), json=payload, timeout=TIMEOUT)
             if r.status_code == 200:
                 return r.json()
+            if r.status_code in (401, 403):
+                raise config.AuthError(config.AUTH_HELP.format(code=r.status_code))
             last = f"HTTP {r.status_code}: {r.text[:400]}"
             if r.status_code < 500:
                 break
         except requests.RequestException as e:
-            last = str(e)
+            # Never let the URL into an error string — the credential is in it,
+            # and this is exactly how it ends up in logs and pasted tracebacks.
+            last = str(e).replace(url, "<gateway url>")
         time.sleep(1.5 * (i + 1))
     raise RuntimeError(f"gateway call failed — {last}")
 

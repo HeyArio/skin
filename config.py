@@ -33,6 +33,33 @@ def load_env(path=ENV_PATH):
     return True
 
 
+class AuthError(RuntimeError):
+    """The gateway rejected the credential.
+
+    Its own class because it is not a per-image failure. It will be true for
+    every image in the batch, so the caller should stop rather than repeat the
+    same rejected call twenty more times. It lives here rather than in llm.py so
+    that run.py can catch it without importing llm — llm needs a gateway URL at
+    import time, and --mock has to keep working without one.
+    """
+
+
+AUTH_HELP = """The gateway rejected the credential (HTTP {code}).
+
+That is a config problem, not an image problem — it would fail the same way for
+every photo, so the run stopped here.
+
+  1. Check VISION_URL in .env. On this gateway the token is part of the URL
+     path, so a truncated or stale path IS an invalid credential.
+  2. If you copied .env.example before this repo was cleaned up, that token had
+     been public in git history and needs rotating — it may already be dead.
+  3. Run `python probe.py`. It reports which request shapes the gateway accepts.
+     All four failing the same way confirms the credential; some passing means
+     GATEWAY_STYLE is wrong instead.
+  4. If your gateway authenticates by header rather than by path, put the token
+     in VISION_KEY and use the plain base URL."""
+
+
 def require(name):
     """Fetch a setting, or explain what to do about it.
 

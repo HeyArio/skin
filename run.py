@@ -23,6 +23,7 @@ import traceback
 
 import cv2
 
+import config
 import pipeline
 import report
 import vision
@@ -147,7 +148,7 @@ def main():
     if not files:
         sys.exit(f"no images found in {a.target}")
 
-    results = []
+    results, stopped = [], None
     for i, p in enumerate(files, 1):
         print(f"[{i}/{len(files)}] {os.path.basename(p)} ... ", end="", flush=True)
         try:
@@ -156,8 +157,21 @@ def main():
             results.append(r)
             print("rejected: " + r["rejected"] if r.get("rejected") else "ok")
         except Exception as e:
+            # A rejected credential is true for every remaining image. Stop, and
+            # keep whatever already succeeded rather than burning the rest of
+            # the batch on the same rejected call.
+            if isinstance(e, config.AuthError):
+                print("FAILED")
+                stopped = str(e)
+                break
             print(f"FAILED: {e}")
             traceback.print_exc(limit=2)
+
+    if stopped:
+        print(f"\n{stopped}\n")
+    if not results:
+        # An empty report is worse than none: it looks like a finished run.
+        sys.exit("nothing was analysed — no report written.")
 
     # The images are base64 and would dwarf everything else. The report carries
     # the pixels; this file carries the numbers.
