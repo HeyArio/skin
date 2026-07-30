@@ -1,0 +1,17 @@
+
+{
+  "image_quality": {"usable": true, "confidence": "high", "issues": []},
+  "metrics": {
+    "dryness":      {"score": 4, "regions": ["left_cheek", "right_cheek"]},
+    "texture":      {"score": 5, "regions": ["forehead", "nose"]},
+    "redness":      {"score": 6, "regions": ["left_cheek", "nose"]},
+    "pigmentation": {"score": 3, "regions": ["right_cheek"]},
+    "lines":        {"score": 2, "regions": ["periorbital_left"]}
+  },
+  "patterns": [
+    {"description": "symmetrical redness across both cheeks and the nose bridge, diffuse borders",
+     "regions": ["left_cheek", "right_cheek", "nose"], "flag_for_review": true}
+  ],
+  "skin_age_band": "30s",
+  "skin_age_drivers": ["periorbital fine lines", "mild textural unevenness"]
+}
