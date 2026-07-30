@@ -198,6 +198,19 @@ mesh, landmarks 33/133 are the subject's *right* eye and 362/263 the subject's
 specialist report is read by someone who will act on it, and clinical convention
 is the patient's own left and right.
 
+**A mirrored selfie inverts every left/right label, and nothing here can tell.**
+Many front cameras save the preview image rather than the true one. MediaPipe
+detects whatever face is in the frame, so on a mirrored photo it assigns its
+"subject's right" landmarks to the subject's actual left, and every downstream
+label follows it. No pixel analysis can distinguish the two cases — a face is
+approximately symmetric, which is the whole reason the flip is invisible. It has
+to come from capture metadata, which means the capture flow has to record it.
+
+Until it does, treat side labels in the specialist report as unverified, and
+have the capture flow either disable mirroring or store a flag alongside the
+image. This is the one place where the pipeline can be confidently and silently
+wrong about something a clinician would act on.
+
 **These index sets need visual verification.** Run `--debug-mesh` and check that
 each labelled polygon sits where it should. Wrong polygons mean the overlay
 lands in the wrong place, every measured metric samples the wrong pixels, *and*

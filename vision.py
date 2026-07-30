@@ -509,6 +509,98 @@ def measure_blemishes(bgr, pts):
     return {"count": len(spots), "spots": spots[:60]}
 
 
+def locate_spots(pts, spots):
+    """Which region each detected blemish falls in.
+
+    Where the spots sit differs from face to face far more than how many there
+    are, and it is exact — a point-in-polygon test, no judgement involved.
+    Overlapping hulls resolve to the smallest containing region, which is the
+    most specific answer available.
+    """
+    order = sorted(REGION_INDICES,
+                   key=lambda r: cv2.contourArea(region_polygon(pts, r).astype(np.float32)))
+    polys = [(r, region_polygon(pts, r).astype(np.int32)) for r in order]
+
+    counts = {}
+    for s in spots:
+        for name, poly in polys:
+            if cv2.pointPolygonTest(poly, (float(s["x"]), float(s["y"])), False) >= 0:
+                counts[name] = counts.get(name, 0) + 1
+                break
+    return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
+
+def measure_tone(bgr, pts, skip=()):
+    """How much redder each region is than the face's own median, in LAB a*.
+
+    Stated relative to the same face because absolute a* is a fact about the
+    camera's white balance. It is deliberately not called "redness" — that is a
+    judged metric with its own rubric, and this is a measurement of colour
+    difference across one face. Its job here is the left-right comparison.
+
+    a* rather than lightness because chroma survives directional lighting far
+    better than luminance does. It does not survive it completely; nothing in a
+    single frame does.
+    """
+    a = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)[:, :, 1].astype(np.float32)
+    face = face_mask(bgr.shape, pts)
+    if not face.any():
+        return {}
+    base = float(np.median(a[face > 0]))
+
+    out = {}
+    for region in REGION_INDICES:
+        if region in skip:
+            continue
+        m = region_mask(bgr.shape, pts, region)
+        if m.sum() == 0:
+            continue
+        out[region] = round(float(np.median(a[m > 0])) - base, 2)
+    return out
+
+
+# Broad areas of flat skin only. The periorbital pair is deliberately excluded:
+# it is a thin ring around the eye socket where shadow depth dominates the
+# measurement, and shadow depth changes with a few degrees of head rotation. A
+# difference there says more about where the light was than about the skin.
+ASYMMETRY_PAIRS = [("left_cheek", "right_cheek"), ("jawline_left", "jawline_right")]
+
+# A side has to differ by at least this much before it is worth stating. Below
+# these, the two sides are the same to within what the measurement can resolve,
+# and a report that says something anyway is inventing a finding.
+ASYMMETRY_A = 1.5     # LAB a* units
+ASYMMETRY_SPOTS = 3   # detected blemishes
+
+
+def measure_asymmetry(tone, spot_counts, skip=()):
+    """Left-right differences worth mentioning.
+
+    Faces are not symmetric and nobody looks at their own closely enough to
+    know how theirs differs. It is also free: both sides are already measured,
+    and the comparison was being thrown away.
+
+    Only pairs where both sides were measurable are compared — on a turned head
+    the far side is in shadow, and "your right cheek is darker" would be a fact
+    about the lighting.
+    """
+    out = []
+    for a, b in ASYMMETRY_PAIRS:
+        if a in skip or b in skip:
+            continue
+
+        if a in tone and b in tone:
+            d = tone[a] - tone[b]
+            if abs(d) >= ASYMMETRY_A:
+                out.append({"regions": [a, b], "measure": "colour",
+                            "redder": a if d > 0 else b, "delta": round(abs(d), 2)})
+
+        na, nb = spot_counts.get(a, 0), spot_counts.get(b, 0)
+        if abs(na - nb) >= ASYMMETRY_SPOTS:
+            out.append({"regions": [a, b], "measure": "blemishes",
+                        "more": a if na > nb else b, "counts": [na, nb]})
+    return out
+
+
 def measure_all(bgr, pts):
     """Every deterministic measurement, with foreshortened regions left out.
 
@@ -518,10 +610,15 @@ def measure_all(bgr, pts):
     specialist gets told which ones were dropped.
     """
     skip = foreshortened(pts)
+    blemishes = measure_blemishes(bgr, pts)
+    tone = measure_tone(bgr, pts, skip=skip)
+    where = locate_spots(pts, blemishes["spots"])
     return {
         "oiliness": measure_oiliness(bgr, pts, skip=skip),
         "pore_size": measure_pores(bgr, pts, skip=skip),
-        "blemishes": measure_blemishes(bgr, pts),
+        "blemishes": {**blemishes, "per_region": where},
+        "tone_vs_face": tone,
+        "asymmetry": measure_asymmetry(tone, where, skip=skip),
         "face_width_px": round(face_width(pts), 1),
         "not_measured": skip,
     }

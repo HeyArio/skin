@@ -11,12 +11,16 @@ through it before you build a product around it.
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env      # fill in, then: set -a; source .env; set +a
 ```
 
-Add `.env` to `.gitignore`. Your gateway URL has the credential in its path, so
-the whole URL is a secret — it leaks through browser history, server logs and
-stack traces more easily than a header would.
+Then copy `.env.example` to `.env` and fill in your gateway URL and model.
+`run.py` and `probe.py` read `.env` themselves, so there is nothing to `source`
+and it behaves the same in cmd, PowerShell and bash. Real environment variables
+still win if you set them.
+
+Your gateway URL has the credential in its path, so the whole URL is a secret —
+it leaks through browser history, server logs and stack traces more easily than
+a header would. `.env` is gitignored; never fill in `.env.example`, which is not.
 
 ## 1. Probe the endpoint first
 
@@ -120,7 +124,13 @@ probe.py      endpoint shape detector
 - **Every finding gets an evidence crop** — the actual pixels it came from, at
   2-3x, chosen deterministically from the scores. No tokens, no model.
 - **Left and right are the subject's**, not the viewer's, because a specialist
-  reading "left cheek" will examine the patient's left cheek.
+  reading "left cheek" will examine the patient's left cheek. Caveat: a mirrored
+  selfie inverts this and no pixel analysis can detect it — the capture flow has
+  to disable mirroring or record a flag. See ARCHITECTURE.md §4.
+- **Spot distribution and left/right asymmetry are measured, not judged.** Where
+  the blemishes sit differs between faces far more than how many there are.
+  Asymmetry is only reported when both sides were measurable and the difference
+  clears a threshold; most faces get nothing, which is the correct answer.
 - **The UI shows bands, not numbers.** Raw scores stay internal. A 6-to-7 wobble
   is invisible in a band and glaring on a dial.
 - **The denylist is enforced in code**, not left to the prompt. Prompts drift;

@@ -12,7 +12,9 @@ import time
 
 import requests
 
-VISION_URL = os.environ["VISION_URL"].rstrip("/")
+import config  # noqa: F401  — importing it loads .env
+
+VISION_URL = config.require("VISION_URL").rstrip("/")
 VISION_KEY = os.environ.get("VISION_KEY", "")
 TEXT_URL = os.environ.get("TEXT_URL", VISION_URL).rstrip("/")
 TEXT_KEY = os.environ.get("TEXT_KEY", VISION_KEY)

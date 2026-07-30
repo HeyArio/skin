@@ -194,8 +194,13 @@ def analyse(path, mock=False, runs=None, gate_images=True):
     measured = vision.measure_all(bgr, pts)
 
     if mock:
+        # The same canned scoring for every image. Every judged field — all five
+        # metrics, their regions, the pattern, the age band — is therefore
+        # identical across a whole batch, and without a marker two reports look
+        # like the model produced the same answer twice.
         scored = json.loads(open(os.path.join(os.path.dirname(__file__),
                                               "mock_scoring.json")).read())
+        scored["_mock"] = True
     else:
         import llm
         n = runs if runs is not None else int(os.environ.get("SCORING_RUNS", "3"))
@@ -211,6 +216,8 @@ def analyse(path, mock=False, runs=None, gate_images=True):
         "oiliness": measured["oiliness"],
         "pore_size": measured["pore_size"],
         "blemishes": measured["blemishes"],
+        "tone_vs_face": measured["tone_vs_face"],
+        "asymmetry": measured["asymmetry"],
         "face_width_px": measured["face_width_px"],
         "not_measured": measured["not_measured"],
     }

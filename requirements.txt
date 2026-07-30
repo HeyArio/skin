@@ -1,0 +1,8 @@
+# The README told you to install these and there was no file to install from.
+#
+# mediapipe pins its own numpy and opencv ranges, so let pip resolve them rather
+# than pinning here and fighting it.
+mediapipe>=0.10.14
+opencv-python>=4.8
+numpy
+requests

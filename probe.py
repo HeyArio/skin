@@ -15,7 +15,9 @@ import numpy as np
 import cv2
 import requests
 
-URL = os.environ["VISION_URL"].rstrip("/")
+import config  # noqa: F401  — importing it loads .env
+
+URL = config.require("VISION_URL").rstrip("/")
 KEY = os.environ.get("VISION_KEY", "")
 MODEL = os.environ.get("VISION_MODEL", "Gemini-3.1-Flash-Lite-Preview")
 

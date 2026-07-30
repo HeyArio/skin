@@ -100,6 +100,77 @@ def _measured(f):
                    f'<dd>{html.escape(v)}</dd></div>' for k, v in facts)
 
 
+def _distribution(f):
+    """Where the detected blemishes actually sit.
+
+    A count is one number and two faces often share it; the distribution almost
+    never matches. It is also exact — a point-in-polygon test against the same
+    landmark regions everything else uses — so it says something specific about
+    this face without anything being inferred.
+    """
+    per = (f.get("blemishes") or {}).get("per_region") or {}
+    total = (f.get("blemishes") or {}).get("count") or 0
+    if not per or total < 3:
+        return ""
+    # A region that was too turned away to measure still has spots detected in
+    # whatever of it is visible. Listing that count unqualified would
+    # contradict the Confidence section further down the same page.
+    turned = set(f.get("not_measured") or [])
+    top = max(per.values())
+    bars = "".join(
+        f'<div class="drow"><div class="dname">'
+        f'{html.escape(pipeline.REGION_LABEL.get(k, k).capitalize())}'
+        f'{"<em>partial</em>" if k in turned else ""}</div>'
+        f'<div class="track"><div class="bar{" partial" if k in turned else ""}" '
+        f'style="width:{v / top * 100:.0f}%"></div></div>'
+        f'<div class="dnum">{v}</div></div>'
+        for k, v in per.items())
+    placed = sum(per.values())
+    note = ("" if placed == total else
+            f'<p class="lede">{total - placed} of {total} fell outside the '
+            f'mapped regions and are not shown.</p>')
+    return f'<h3>Where the blemishes are</h3>{note}<div class="dist">{bars}</div>'
+
+
+def _asymmetry(f):
+    """Left-right differences, where both sides were measurable.
+
+    Nobody looks at their own face closely enough to know how its sides differ,
+    which makes this one of the few things a report can say that the reader
+    cannot already see in a mirror. Stated as the measurement it is, with no
+    account of what causes it.
+    """
+    items = f.get("asymmetry") or []
+    if not items:
+        return ""
+    out = []
+    for it in items:
+        side = pipeline.REGION_LABEL.get(it.get("redder") or it.get("more"), "").lower()
+        if it["measure"] == "colour":
+            out.append(f'Your <strong>{html.escape(side)}</strong> reads redder than '
+                       f'the other side, by {it["delta"]} points of colour.')
+        else:
+            hi, lo = max(it["counts"]), min(it["counts"])
+            out.append(f'Your <strong>{html.escape(side)}</strong> carries more '
+                       f'detected blemishes than the other side &mdash; {hi} against {lo}.')
+    return ('<h3>Left and right</h3><div class="conf">'
+            + "".join(f"<p>{o}</p>" for o in out) + "</div>")
+
+
+def _side_by_side(*blocks):
+    """Lay out whichever of these blocks have content.
+
+    Each has to be wrapped, or the grid would put a heading in one column and
+    its own content in the next. An absent block takes no column at all.
+    """
+    present = [b for b in blocks if b]
+    if not present:
+        return ""
+    if len(present) == 1:
+        return present[0]
+    return f'<div class="split">{"".join(f"<div>{b}</div>" for b in present)}</div>'
+
+
 def _patterns(f):
     """Patterns the scoring pass flagged. These are the reason a specialist is
     in the loop at all, so they get their own block rather than a JSON key."""
@@ -209,8 +280,17 @@ def card(r):
     f = r["findings"]
     drivers = ", ".join(f.get("skin_age_drivers") or [])
 
+    mock = ('<div class="mock"><strong>Mock run &mdash; the model was not called.</strong> '
+            'Everything under Assessment and Patterns is canned output from '
+            '<code>mock_scoring.json</code> and is identical for every image in '
+            'the batch. Only the measured values — blemishes, shine, pore '
+            'visibility, distribution and asymmetry — were read from this '
+            'photograph. Drop <code>--mock</code> for a real analysis.</div>'
+            ) if f.get("_mock") else ""
+
     return f"""<section class="page">
 <header><h2>{html.escape(name)}</h2><span class="stamp">Skin analysis &middot; {DATE}</span></header>
+{mock}
 <div class="top">
   <div class="figure">
     <div class="imgwrap">
@@ -227,6 +307,7 @@ def card(r):
   </div>
 </div>
 {_patterns(f)}
+{_side_by_side(_distribution(f), _asymmetry(f))}
 {_receipts(r.get("receipts"))}
 {_prose("Your result", r.get("user_report"), "user")}
 {_prose("Specialist notes", r.get("specialist_report"), "spec")}
@@ -276,6 +357,24 @@ h3:first-child{margin-top:0}
 .fact dt{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:#7a7770}
 .fact dd{margin:1px 0 0;font-size:14px}
 .drivers{color:#7a7770;font-size:11.5px;margin:12px 0 0}
+
+.mock{background:#fdf0e3;border-left:3px solid #EF9F27;padding:9px 13px;
+  border-radius:0 5px 5px 0;margin:0 0 18px;font-size:12px;line-height:1.5}
+.mock code{font:11px ui-monospace,Menlo,Consolas,monospace;background:#f6e6d0;
+  padding:0 4px;border-radius:3px}
+
+.split{display:grid;grid-template-columns:1fr 1fr;gap:0 30px;align-items:start}
+.split>div>h3{margin-top:22px}
+.dist{margin:0;max-width:440px}
+.drow{display:grid;grid-template-columns:132px 1fr 26px;gap:9px;align-items:center;
+  padding:2px 0}
+.drow>*{min-width:0}
+.dname{font-size:12px;white-space:nowrap}
+.dname em{font-style:normal;font-size:9.5px;color:#a5a29b;background:#eceae5;
+  border-radius:8px;padding:1px 5px;margin-left:5px}
+.dnum{font-size:12px;color:#52514e;text-align:right}
+/* A count from a partly hidden region is a floor, not a total. */
+.bar.partial{background:repeating-linear-gradient(135deg,#2a78d6 0 5px,#7aa9e0 5px 10px)}
 
 .patterns{margin:0;padding-left:17px}
 .patterns li{margin-bottom:3px}
