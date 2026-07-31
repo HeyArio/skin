@@ -64,9 +64,10 @@ def endpoint_summary():
     segments = [s for s in u.path.split("/") if s]
     long_segments = [s for s in segments if len(s) > 40]
 
+    shown = "/".join(s if len(s) <= 40 else f"<token {mask(s)}>" for s in segments)
     print("Config")
     print(f"  host          {u.scheme}://{u.netloc}")
-    print(f"  path          /{'/'.join(s if len(s) <= 40 else mask(s) for s in segments)}")
+    print(f"  path          /{shown}")
     print(f"  model         {MODEL}")
     print(f"  VISION_KEY    {mask(KEY)}")
     print(f"  token in URL  {'yes — path carries a long opaque segment' if long_segments else 'no'}")
@@ -136,8 +137,15 @@ def show(label, r):
 def find_auth():
     """Try each presentation of the credential against the simplest possible
     call. Returns the first that works, and what to put in .env for it."""
-    print("Authentication — simplest text call, one variant at a time")
-    for label, headers, params, advice in auth_variants():
+    variants = auth_variants()
+    print(f"Authentication — simplest text call, {len(variants)} variant(s) to try")
+    if not KEY:
+        # Without a key there is exactly one thing to try, and its failure says
+        # nothing about any scheme. Saying so up front matters: a single FAIL
+        # under a heading about authentication reads like a verdict on the
+        # credential rather than a report that none was available to test.
+        print("  VISION_KEY is empty, so only the no-credential case can be tried.")
+    for label, headers, params, advice in variants:
         r = post(f"{URL}/chat/completions", PING, headers, params)
         if show(label, r):
             print(f"\n  -> in .env: {advice}\n")
@@ -181,13 +189,24 @@ def main():
 
     auth = find_auth()
     if auth is None:
-        print("Every authentication variant was rejected.\n")
+        if not KEY:
+            print("NOT AUTHENTICATED — and no key was available to try.\n")
+            print("VISION_KEY is empty, so the only thing tested was whether the URL")
+            print("authenticates on its own. It does not. Nothing here has been ruled")
+            print("out yet, because nothing was tried.\n")
+            print("Put your API key in VISION_KEY and re-run. If you have a working")
+            print("curl for this gateway, the word before the token in its")
+            print("Authorization header is your AUTH_SCHEME.")
+            raise SystemExit(1)
+
+        print("NOT AUTHENTICATED — every way of presenting the key was rejected.\n")
         print("The endpoint is reachable — it answered — so this is the credential,")
         print("not the URL or the request shape. Check, in this order:\n")
-        print("  1. WHICH credential. A key from an API-key dashboard goes in")
-        print("     VISION_KEY. A gateway URL with a long opaque path segment")
-        print("     already contains one, and the two are not interchangeable.")
-        print("     Setting the wrong one leaves you with no valid credential.")
+        print("  1. WHICH credential, and WHICH endpoint. A key from a dashboard")
+        print("     goes in VISION_KEY, and it pairs with the plain base URL from")
+        print("     that same dashboard. A long opaque URL path is a different,")
+        print("     self-contained credential. Mixing halves of the two leaves you")
+        print("     with a valid-looking config and no working credential in it.")
         print("  2. Whether the key is still live, and scoped to this model.")
         print("  3. Whether your account has access to VISION_MODEL as spelled")
         print("     above — some gateways return 401 rather than 404 for a model")
