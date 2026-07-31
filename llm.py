@@ -28,10 +28,18 @@ TEXT_MODEL = os.environ.get("TEXT_MODEL", VISION_MODEL)
 TIMEOUT = 90
 
 
+# The word in front of the token in the Authorization header. "Bearer" is the
+# common default and is NOT universal — ArvanCloud wants "apikey", and a gateway
+# that expects one and receives the other answers 401, exactly as it would for a
+# wrong key. Set AUTH_SCHEME empty to send the bare token with no prefix.
+# `probe.py` determines this for you.
+AUTH_SCHEME = os.environ.get("AUTH_SCHEME", "Bearer").strip()
+
+
 def _headers(key):
     h = {"Content-Type": "application/json"}
     if key:
-        h["Authorization"] = f"Bearer {key}"
+        h["Authorization"] = f"{AUTH_SCHEME} {key}" if AUTH_SCHEME else key
     return h
 
 

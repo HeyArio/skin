@@ -458,7 +458,11 @@ assessment quality and keeps that number predictable.
 VISION_URL      Gateway URL for the vision model. On ArvanCloud the credential
                 is in the URL path, so treat the whole URL as a secret.
 VISION_MODEL    Model identifier
-VISION_KEY      Leave empty if the token is in the URL
+VISION_KEY      Your API key. Leave empty only if the token is in the URL path
+AUTH_SCHEME     The word before the token in the Authorization header.
+                ArvanCloud wants "apikey", many gateways want "Bearer", some
+                want the bare token (set it empty). Wrong scheme returns 401,
+                which is indistinguishable from a wrong key — run probe.py
 TEXT_URL        Gateway URL for the report calls. Leave unset and it falls
                 back to VISION_URL — which is what you want while everything
                 runs on one model.

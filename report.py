@@ -255,15 +255,16 @@ def _receipts(receipts):
                    f'<img src="data:image/jpeg;base64,{rc["image_b64"]}" alt="">{zoom}</div>'
                    f'<figcaption><strong>{html.escape(rc["label"])}</strong>'
                    f'{claim}</figcaption></figure>')
-    return (f'<h3>Evidence</h3><p class="lede">Each finding, shown at the patch of '
-            f'skin it was read from.</p><div class="receipts">{"".join(out)}</div>')
+    return (f'<div class="keep"><h3>Evidence</h3><p class="lede">Each finding, shown '
+            f'at the patch of skin it was read from.</p>'
+            f'<div class="receipts">{"".join(out)}</div></div>')
 
 
 def _prose(title, text, cls):
     if not text:
         return ""
     paras = "".join(f"<p>{html.escape(p)}</p>" for p in text.split("\n") if p.strip())
-    return f'<h3>{title}</h3><div class="prose {cls}">{paras}</div>'
+    return f'<div class="keep"><h3>{title}</h3><div class="prose {cls}">{paras}</div></div>'
 
 
 def card(r):
@@ -418,10 +419,12 @@ figcaption i{font-style:normal;display:block;font-size:10.5px;color:#7a7770;
     break-after:page;background:#fff}
   .page:last-child{break-after:auto}
   .toggles{display:none}
-  .top,.receipts,.prose,.receipt,.patterns{break-inside:avoid-page}
-  /* A heading whose block breaks to the next page must go with it. Otherwise
-     "Your result" sits alone at the foot of a page and the report reads as
-     though the section is empty. */
+  .top,.receipts,.receipt,.patterns,.dist{break-inside:avoid-page}
+  /* A heading must not be left at the foot of a page with its content on the
+     next — the section reads as empty. Chrome honours break-after:avoid
+     inconsistently, so the heading is wrapped WITH its block and the wrapper
+     is what carries the rule. */
+  .keep{break-inside:avoid-page}
   h3{break-after:avoid-page}
 }
 """
