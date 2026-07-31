@@ -14,16 +14,41 @@ import requests
 
 import config  # importing it loads .env
 
-VISION_URL = config.require("VISION_URL").rstrip("/")
+def _setting(name, fallback):
+    """Fall back when a setting is empty, not only when it is absent.
+
+    `.env` files express "unset" by writing `TEXT_URL=""`, which creates the
+    variable with an empty value — so `os.environ.get(name, fallback)` returns
+    the empty string and the fallback never fires. That turned the two report
+    calls into requests against "/chat/completions", a URL with no host.
+    """
+    return os.environ.get(name) or fallback
+
+
+def _endpoint(name, value):
+    """A base URL, checked for a scheme at import rather than at request time.
+
+    Without this the failure surfaces from inside requests, one image at a time,
+    as a complaint about a URL the caller never knowingly supplied.
+    """
+    value = value.rstrip("/")
+    if not value.startswith(("http://", "https://")):
+        raise SystemExit(
+            f"{name} is not a usable URL: it must start with http:// or https://\n"
+            f"Set it to the base endpoint — the part before /chat/completions.")
+    return value
+
+
+VISION_URL = _endpoint("VISION_URL", config.require("VISION_URL"))
 VISION_KEY = os.environ.get("VISION_KEY", "")
-TEXT_URL = os.environ.get("TEXT_URL", VISION_URL).rstrip("/")
-TEXT_KEY = os.environ.get("TEXT_KEY", VISION_KEY)
-STYLE = os.environ.get("GATEWAY_STYLE", "openai")  # openai | gemini
-VISION_MODEL = os.environ.get("VISION_MODEL", "Gemini-3.1-Flash-Lite-Preview")
+TEXT_URL = _endpoint("TEXT_URL", _setting("TEXT_URL", VISION_URL))
+TEXT_KEY = _setting("TEXT_KEY", VISION_KEY)
+STYLE = _setting("GATEWAY_STYLE", "openai")  # openai | gemini
+VISION_MODEL = _setting("VISION_MODEL", "Gemini-3.1-Flash-Lite-Preview")
 # Defaults to the vision model rather than to a second one. Everything runs on
 # one model until there is a reason not to, and a default naming a model you
 # are not using is a config bug waiting to be debugged.
-TEXT_MODEL = os.environ.get("TEXT_MODEL", VISION_MODEL)
+TEXT_MODEL = _setting("TEXT_MODEL", VISION_MODEL)
 
 TIMEOUT = 90
 
@@ -63,9 +88,13 @@ def _post(url, payload, key, attempts=3):
                     f"your connection, VPN and proxy — the request never "
                     f"arrived, so nothing about the credential is known.")
         except requests.RequestException as e:
-            # Never let the URL into an error string — the credential is in it,
-            # and this is exactly how it ends up in logs and pasted tracebacks.
-            last = str(e).replace(url, "<gateway url>")
+            # Never let a real gateway URL into an error string — the credential
+            # is in its path, and this is how it reaches logs and pasted
+            # tracebacks. A malformed one holds no secret, and redacting it hid
+            # the only clue to what was wrong: "Invalid URL '<gateway url>'".
+            last = str(e)
+            if url.startswith(("http://", "https://")):
+                last = last.replace(url, "<gateway url>")
         time.sleep(1.5 * (i + 1))
     raise RuntimeError(f"gateway call failed — {last}")
 
