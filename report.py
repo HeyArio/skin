@@ -10,6 +10,7 @@ stays in out/results.json where a machine can have it.
 import datetime
 import html
 import os
+import re
 
 import pipeline
 
@@ -227,6 +228,8 @@ def _technical(r, f):
         bits.append(f"score spread {spread[worst]} on {worst} — rubric needs tightening")
     if r.get("denylist_trip"):
         bits.append(f"denylist tripped on \"{r['denylist_trip']}\", fallback text shown")
+    if claims := r.get("unsupported_claims"):
+        bits.append(f"user text claimed {', '.join(claims)} — nothing measures those")
     if q.get("advisories"):
         bits.append(", ".join(q["advisories"]).replace("_", " "))
     return f'<p class="tech">{html.escape(" · ".join(bits))}</p>' if bits else ""
@@ -261,10 +264,27 @@ def _receipts(receipts):
 
 
 def _prose(title, text, cls):
+    """Render a model's prose.
+
+    Models emit markdown emphasis whatever the prompt says, and escaped output
+    showed it raw — the specialist report read "**MEASURED**". The prompt asks
+    for plain text; this renders the emphasis anyway for the times it does not
+    listen. Escaping happens first, so the markdown pass can only ever produce
+    the two tags it makes itself.
+    """
     if not text:
         return ""
-    paras = "".join(f"<p>{html.escape(p)}</p>" for p in text.split("\n") if p.strip())
-    return f'<div class="keep"><h3>{title}</h3><div class="prose {cls}">{paras}</div></div>'
+    paras = []
+    for p in text.split("\n"):
+        if not p.strip():
+            continue
+        safe = html.escape(p)
+        safe = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", safe)
+        safe = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"<em>\1</em>", safe)
+        safe = re.sub(r"^\s*[-*]\s+", "", safe)          # stray list bullets
+        paras.append(f"<p>{safe}</p>")
+    return (f'<div class="keep"><h3>{title}</h3>'
+            f'<div class="prose {cls}">{"".join(paras)}</div></div>')
 
 
 def card(r):
@@ -329,7 +349,11 @@ h2{font-size:17px;margin:0;letter-spacing:-.01em}
 .stamp{font-size:10.5px;text-transform:uppercase;letter-spacing:.13em;color:#7a7770}
 h3{font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:#7a7770;
   margin:22px 0 9px;font-weight:600}
-h3:first-child{margin-top:0}
+/* Only the summary column's first heading sits flush with the top of its
+   column. Left unscoped, this also zeroed the top margin of every heading
+   wrapped in .keep — which is all of them — and each section collided with
+   whatever preceded it. */
+.summary>h3:first-child{margin-top:0}
 .lede{margin:-4px 0 10px;color:#7a7770;font-size:12px}
 
 .top{display:grid;grid-template-columns:260px 1fr;gap:26px;align-items:start}
@@ -366,7 +390,9 @@ h3:first-child{margin-top:0}
 
 .split{display:grid;grid-template-columns:1fr 1fr;gap:0 30px;align-items:start}
 .split>div>h3{margin-top:22px}
-.dist{margin:0;max-width:440px}
+/* Bottom margin so the next section's heading does not sit straight on the
+   last bar — h3's top margin collapses against nothing here. */
+.dist{margin:0 0 4px;max-width:440px}
 .drow{display:grid;grid-template-columns:132px 1fr 26px;gap:9px;align-items:center;
   padding:2px 0}
 .drow>*{min-width:0}

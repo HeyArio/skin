@@ -92,6 +92,11 @@ REGION_INDICES = {
 REGION_DILATE = {"periorbital_right": 1.5, "periorbital_left": 1.5, "perioral": 1.7}
 REGION_HOLES = {r: REGION_INDICES[r] for r in REGION_DILATE}
 
+# Lateral canthus of each eye — the skin side of a periorbital ring, and where
+# periorbital lines actually show. Used to aim the evidence crop away from the
+# eye itself.
+OUTER_CORNER = {"periorbital_right": 33, "periorbital_left": 263}
+
 T_ZONE = ["forehead", "glabella", "nose"]
 
 
@@ -199,8 +204,20 @@ def crop_region(bgr, pts, region, out_px=420, pad=1.0):
     if m["m00"] <= 0:
         return None
     area = cv2.contourArea(poly.astype(np.float32))
-    return crop_box(bgr, m["m10"] / m["m00"], m["m01"] / m["m00"],
-                    (area ** 0.5) * pad, out_px)
+    cx, cy = m["m10"] / m["m00"], m["m01"] / m["m00"]
+
+    # A ring region's centroid is the middle of the hole. Cropping there gives a
+    # magnified eyeball captioned "around the left eye — lines, minimal", which
+    # is neither evidence of anything nor a picture anyone wants of themselves.
+    # Shift to the outer corner instead: that is skin, and for periorbital lines
+    # it is where they actually appear.
+    outer = OUTER_CORNER.get(region)
+    if outer is not None:
+        ox, oy = pts[outer]
+        cx, cy = cx + (ox - cx) * 1.15, cy + (oy - cy) * 1.15
+        area *= 0.55
+
+    return crop_box(bgr, cx, cy, (area ** 0.5) * pad, out_px)
 
 
 def crop_spots(bgr, pts, spots, out_px=420, pad=3.0):

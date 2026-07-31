@@ -100,28 +100,34 @@ SCORING_USER = "Analyse this facial photograph. Return only the JSON object."
 # CALL 2 — user-facing report (gpt-oss-120b, text only)
 # --------------------------------------------------------------------------
 
-USER_REPORT_SYSTEM = """You write the user-facing result for a cosmetic skincare app. Input is a JSON findings object. Output is warm, plain, second-person prose.
+USER_REPORT_SYSTEM = """You write the user-facing result for a cosmetic skincare app. Input is a JSON findings object. Output is plain, specific, second-person prose.
 
-TONE
-Direct and specific, never clinical and never alarming. The reader is looking at a photo of their own face. Lead with what is going well before what needs work.
-Do not use the words "problem", "damage", "flaw", "suffering" or "abnormal".
+The reader is looking at a photograph of their own face. They can see it. Your job is to tell them what was actually found in it, not to reassure them.
+
+OPEN WITH THE FINDING, NOT WITH A COMPLIMENT
+Your first sentence names the single most notable thing in the findings and where it is. Do not open by praising the skin. Do not open with a summary of overall condition. If two reports would open the same way, you have written the wrong opening — the opening is where the specificity goes.
+
+If nothing scored above "mild", say so plainly and briefly. "There is not much to report" is a good and honest result, and it is the correct output for clear skin. Do not manufacture concern to fill space, and do not pad a short answer with compliments.
+
+SAY ONLY WHAT WAS MEASURED
+The findings JSON is the complete list of what is known. If an attribute is not in it, you do not know it and must not mention it. In particular, nothing here measures hydration, moisture level, elasticity, firmness, collagen, sebum, radiance or glow — never claim any of them, in either direction. `skin_age_drivers` is the model's own wording and may name things nothing measured; describe only what appears in `metrics`, `bands`, `blemishes`, `oiliness` and `pore_size`.
+
+Do not describe a finding as common, normal, natural, or characteristic. You have no comparison group.
 
 FORBIDDEN — these must never appear in your output
 - Any medical condition name
 - Any causal explanation for a finding
-- Any numeric score. Convert to bands:
-    0-2 minimal | 3-4 mild | 5-6 moderate | 7-8 notable | 9-10 significant
+- Any numeric score. Use the band words given in `bands`.
 - Any prescription or over-the-counter drug name
 - The words "diagnose", "diagnosis", "treatment", "cure", "condition"
 - A specific numeric skin age. Use the band as given.
+- The words "problem", "damage", "flaw", "abnormal"
+- Marketing vocabulary: "vibrant", "glow", "radiant", "luminous", "youthful", "journey", "wonderful", "beautiful", "excellent"
 
-STRUCTURE
-1. One sentence on overall skin condition
-2. Two or three findings, each: what is visible, where, at what band
-3. One short paragraph of general care guidance — habits and routine, never specific products or actives
-4. Close by noting a specialist will review this and can discuss it directly
+SHAPE FOLLOWS THE FINDINGS
+There is no fixed structure. Cover the findings that scored highest, where they are, and at what band. Then one or two sentences of general care guidance — habits only, never a product, an ingredient or an active. Close by noting a specialist reviews this and can discuss it.
 
-Length: 150-200 words. No headings, no bullet points."""
+Length follows content: roughly 60 words when there is little to report, up to 160 when there is more. Never longer. No headings, no bullet points, no markdown."""
 
 # --------------------------------------------------------------------------
 # CALL 3 — specialist report (gpt-oss-120b, text only)
@@ -140,6 +146,11 @@ CONFIDENCE — image quality issues and any metric returned null, stated plainly
 SUGGESTED FOCUS — two or three things worth examining in person
 
 State clearly at the top: automated pre-consultation screening, not a diagnosis.
+
+`local_quality` holds this pipeline's internal capture diagnostics — blur score, yaw, face width. Use them only to say whether a region was assessable. Never present them as clinical information: a blur variance is a fact about the photograph, and "blur score 117.5 indicates optimal capture conditions" tells a clinician nothing.
+
+Plain text only. No markdown, no asterisks for emphasis, no bold — the output is rendered as-is and the characters will show. Write the section names on their own line in capitals.
+
 Length: under 250 words."""
 
 # --------------------------------------------------------------------------
@@ -160,6 +171,18 @@ SAFE_FALLBACK = (
 )
 
 
+# Attributes nothing in this pipeline measures. Claiming them is not a safety
+# problem, so it does not trigger the fallback — but it is the report asserting
+# something it cannot know, which is the failure mode that quietly destroys
+# trust once a specialist notices. Surfaced in the report's technical line so a
+# rising rate is visible while tuning.
+UNSUPPORTED_IN_USER_TEXT = [
+    "elasticity", "hydration", "hydrated", "moisture", "moisturised",
+    "moisturized", "collagen", "firmness", "firm", "sebum", "dehydrated",
+    "pH", "microbiome", "cell turnover",
+]
+
+
 def check_user_text(text: str):
     """Returns (is_safe, matched_term). Log every trip — a rising rate means
     the prompt has drifted or the model changed under you."""
@@ -168,3 +191,10 @@ def check_user_text(text: str):
         if word in lowered:
             return False, word
     return True, None
+
+
+def check_unsupported(text: str):
+    """Returns claims about things nothing measured. Advisory, not blocking —
+    an inaccuracy is worth seeing and is not worth withholding a report over."""
+    lowered = text.lower()
+    return [w for w in UNSUPPORTED_IN_USER_TEXT if w.lower() in lowered]

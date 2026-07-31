@@ -245,6 +245,9 @@ def analyse(path, mock=False, runs=None, gate_images=True):
         result["user_report"] = user_text if safe else prompts.SAFE_FALLBACK
         result["denylist_trip"] = hit          # log this — a rising rate means drift
         result["user_report_raw"] = user_text  # kept for review only, never shipped
+        # Advisory, not blocking: the report claiming something nothing measured
+        # is an accuracy failure, not a safety one.
+        result["unsupported_claims"] = prompts.check_unsupported(user_text)
 
         result["specialist_report"] = llm.write_report(
             prompts.SPECIALIST_REPORT_SYSTEM, slim)
