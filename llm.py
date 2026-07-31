@@ -55,6 +55,13 @@ def _post(url, payload, key, attempts=3):
             last = f"HTTP {r.status_code}: {r.text[:400]}"
             if r.status_code < 500:
                 break
+        except (requests.ConnectionError, requests.Timeout) as e:
+            # Nothing answered. Worth retrying — this is what a blip looks like
+            # — but named as itself, because "could not connect" and "was
+            # rejected" send you to completely different places.
+            last = (f"could not reach the gateway ({type(e).__name__}). Check "
+                    f"your connection, VPN and proxy — the request never "
+                    f"arrived, so nothing about the credential is known.")
         except requests.RequestException as e:
             # Never let the URL into an error string — the credential is in it,
             # and this is exactly how it ends up in logs and pasted tracebacks.

@@ -108,11 +108,18 @@ def auth_variants():
 
 
 def post(url, payload, headers=None, params=None):
+    """Returns a Response, or the exception itself.
+
+    The exception object rather than its text, because a transport failure and
+    an HTTP rejection are different diagnoses and the caller has to be able to
+    tell them apart. Flattening both to a string is how "nothing answered" ends
+    up being reported as "your credential was rejected".
+    """
     h = {"Content-Type": "application/json", **(headers or {})}
     try:
         return requests.post(url, headers=h, params=params, json=payload, timeout=TIMEOUT)
     except requests.RequestException as e:
-        return str(e).replace(URL, "<gateway url>")
+        return e
 
 
 def text_of(d):
@@ -124,14 +131,58 @@ def text_of(d):
 
 
 def show(label, r):
-    if isinstance(r, str):
-        print(f"  FAIL  {label}  {r[:110]}")
+    if isinstance(r, Exception):
+        # Never print the exception text verbatim: requests puts the full URL in
+        # it, and on a path-token gateway the URL is the credential.
+        print(f"  FAIL  {label}  {type(r).__name__} — nothing answered")
         return False
     if r.status_code == 200:
         print(f"  PASS  {label}\n        -> {text_of(r.json())[:110].strip()}")
         return True
     print(f"  FAIL  {label}  [HTTP {r.status_code}] {r.text[:110].strip()}")
     return False
+
+
+def check_reachable():
+    """Question zero: does anything answer at all?
+
+    Every question after this one presumes a response to interpret. A host that
+    cannot be reached produces the same bare failure for all ten credential
+    variants, and reading that as ten rejections is how a network problem gets
+    diagnosed as an authentication problem.
+    """
+    import socket
+    from urllib.parse import urlsplit
+
+    host = urlsplit(URL).netloc.split(":")[0]
+    print("Reachability")
+    try:
+        socket.getaddrinfo(host, 443)
+        print(f"  DNS           {host} resolves")
+    except socket.gaierror:
+        print(f"  DNS           {host} DOES NOT RESOLVE\n")
+        print("The hostname could not be looked up, so no request was sent and")
+        print("nothing about your key or the URL path has been tested.\n")
+        print("  - check the hostname for a typo")
+        print("  - check you are online, and off any VPN that blocks it")
+        print("  - some networks and some countries block this host outright")
+        raise SystemExit(1)
+
+    r = post(f"{URL}/chat/completions", PING)
+    if isinstance(r, Exception):
+        print(f"  connect       FAILED — {type(r).__name__}\n")
+        print("DNS resolves but the connection did not complete, so nothing was")
+        print("tested. This is a network path problem, not a credential problem —")
+        print("your key has not been checked at all yet.\n")
+        print("  - if this host worked earlier today, the change is on your side:")
+        print("    a VPN toggled, a different network, a proxy, or a firewall")
+        print("  - try the same URL with curl. If curl cannot reach it either,")
+        print("    nothing in this repo can fix it")
+        print("  - if you use a proxy, set HTTPS_PROXY so requests picks it up")
+        raise SystemExit(1)
+
+    print(f"  connect       ok — HTTP {r.status_code} from {host}\n")
+    return r
 
 
 def find_auth():
@@ -186,6 +237,7 @@ def probe_shapes(headers, params):
 
 def main():
     endpoint_summary()
+    check_reachable()
 
     auth = find_auth()
     if auth is None:
@@ -200,8 +252,8 @@ def main():
             raise SystemExit(1)
 
         print("NOT AUTHENTICATED — every way of presenting the key was rejected.\n")
-        print("The endpoint is reachable — it answered — so this is the credential,")
-        print("not the URL or the request shape. Check, in this order:\n")
+        print("The host answered every time, so the network and the URL are fine")
+        print("and this is the credential. Check, in this order:\n")
         print("  1. WHICH credential, and WHICH endpoint. A key from a dashboard")
         print("     goes in VISION_KEY, and it pairs with the plain base URL from")
         print("     that same dashboard. A long opaque URL path is a different,")
